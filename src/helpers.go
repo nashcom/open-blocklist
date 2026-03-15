@@ -6,8 +6,9 @@ package main
 import (
     "bufio"
     "fmt"
-    "runtime"
+    "net/http"
     "os"
+    "runtime"
     "strconv"
     "strings"
     "time"
@@ -217,4 +218,44 @@ func readOSRelease() (map[string]string, error) {
     }
 
     return data, scanner.Err()
+}
+
+var httpClient = &http.Client{
+    Timeout: 2 * time.Second,
+}
+
+func waitForEtcd(endpoint string, maxWait time.Duration) {
+    url := endpoint + "/health"
+
+    retryInterval  := 2 * time.Second
+    reportInterval := 10 * time.Second
+
+    start := time.Now()
+    nextReport := start
+
+    for {
+        resp, err := httpClient.Get(url)
+        if err == nil && resp.StatusCode == http.StatusOK {
+            resp.Body.Close()
+            logMsg("etcd is available")
+            return
+        }
+
+        if resp != nil {
+            resp.Body.Close()
+        }
+
+        now := time.Now()
+
+        if now.After(nextReport) {
+            logMsg("Waiting for etcd at %s (elapsed %s)", endpoint, now.Sub(start))
+            nextReport = now.Add(reportInterval)
+        }
+
+        if now.Sub(start) > maxWait {
+            logFatal("Etcd did not become available within %s", maxWait)
+        }
+
+        time.Sleep(retryInterval)
+    }
 }

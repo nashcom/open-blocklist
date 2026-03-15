@@ -111,7 +111,7 @@ const (
     defaultApiListenAddr           = ":8090"
     defaultMetricsAddr             = ":9100"
     defaultLogLevel                = LOG_ERROR
-    defaultEtcEndpoint             = "http://open-blocklist-etcd:2379"
+    defaultEtcEndpoint             = "http://etcd:2379"
 )
 
 // Declared to overwrite by build
@@ -848,13 +848,14 @@ func main() {
     logSpace()
 
     showCfg("Description", "Variable", "Default", "Current")
-    logMsg("%s", dashLine(140))
+    logMsg("%s", dashLine(160))
 
     logLevelValues := fmt.Sprintf("%s|%s|%s|%s|%s", LOG_NONE, LOG_ERROR, LOG_INFO, LOG_VERBOSE, LOG_DEBUG)
 
     showCfg("Lookup   listen address",      env_openbl_LookupListenAddr,  formatStr(defaultLookupListenAddr), gLookupListenAddr)
     showCfg("API      listen address",      env_openbl_ApiListenAddr,     formatStr(defaultApiListenAddr),    gApiListenAddr)
     showCfg("Metrics  listen address",      env_openbl_MetricsListenAddr, formatStr(defaultMetricsAddr),      gMetricListnerAddr)
+    showCfg("etcd endpoint URL",            env_openbl_EtcEndpoint,       formatStr(defaultEtcEndpoint),      gEtcdEndpoint)
     showCfg(logLevelValues,                 env_openbl_LogLevel,          defaultLogLevel,                    gLogLevel)
     showCfg("Log output is in JSON format", env_openbl_LogJSON,           defaultLogJSON,                     gLogJSON)
 
@@ -862,6 +863,8 @@ func main() {
     logSpace()
 
     go handleSignals()
+
+    waitForEtcd (gEtcdEndpoint, 2 * time.Minute)
 
      // Load existing data
     loadFromEtcd()

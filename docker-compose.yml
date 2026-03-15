@@ -4,7 +4,7 @@ services:
 
     image: ${ETCD_IMAGE:-registry.k8s.io/etcd:3.5.15-0}
     container_name: open-blocklist-etcd
-    hostname: open-blocklist-etcd
+    hostname: etcd
 
     command: >
       /usr/local/bin/etcd
@@ -23,6 +23,7 @@ services:
 
     image: ${COREDNS_IMAGE:-coredns/coredns:latest}
     container_name: open-blocklist-dns
+    hostname: dns
 
     depends_on:
       - etcd
@@ -41,6 +42,7 @@ services:
 
     image: ${OPEN_BLOCKLIST_IMAGE:-nashcom/open-blocklist:latest}
     container_name: open-blocklist-main
+    hostname: open-blocklist
 
     depends_on:
       - etcd

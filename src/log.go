@@ -11,7 +11,7 @@ import (
 )
 
 func showCfg(description, variableName, defaultValue, currentValue any) {
-    logMsg("%-34s  %-34s %-30v  %v", variableName, description, defaultValue, currentValue)
+    logMsg("%-34s  %-40s %-40v  %v", variableName, description, defaultValue, currentValue)
 }
 
 func showInfo(description, currentValue any) {

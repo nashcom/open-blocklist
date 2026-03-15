@@ -218,5 +218,5 @@ spec:
               name: metrics
 
           env:
-            - name: ETCD_ENDPOINT
+            - name: OPENBL_ETCD_ENDPOINT
               value: http://etcd:2379
