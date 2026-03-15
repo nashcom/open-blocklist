@@ -1,0 +1,23 @@
+open-blocklist.internal {
+    etcd {
+        path /skydns
+        endpoint http://etcd:2379
+    }
+
+    cache 10
+    log
+    errors
+}
+
+in-addr.arpa {
+    etcd {
+        path /skydns
+        endpoint http://etcd:2379
+        fallthrough
+    }
+
+    forward . /etc/resolv.conf
+    cache 30
+    log
+    errors
+}

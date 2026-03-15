@@ -1,0 +1,57 @@
+services:
+
+  etcd:
+
+    image: ${ETCD_IMAGE:-registry.k8s.io/etcd:3.5.15-0}
+    container_name: open-blocklist-etcd
+    hostname: open-blocklist-etcd
+
+    command: >
+      /usr/local/bin/etcd
+      --advertise-client-urls=http://0.0.0.0:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd-data
+
+    ports:
+      - "${ETCD_HOST_PORT:-2379}:2379"
+
+    volumes:
+      - open-blocklist-etc-data:/etcd-data
+
+
+  coredns:
+
+    image: ${COREDNS_IMAGE:-coredns/coredns:latest}
+    container_name: open-blocklist-dns
+
+    depends_on:
+      - etcd
+
+    volumes:
+      - ./Corefile:/Corefile
+
+    command: -conf /Corefile
+
+    ports:
+      - "${DNS_HOST_PORT:-55}:53/udp"
+      - "${DNS_HOST_PORT:-55}:53/tcp"
+
+
+  open-blocklist:
+
+    image: ${OPEN_BLOCKLIST_IMAGE:-nashcom/open-blocklist:latest}
+    container_name: open-blocklist-main
+
+    depends_on:
+      - etcd
+
+    ports:
+      - "${LOOKUP_HOST_PORT:-8080}:8080"
+      - "${BLOCK_HOST_PORT:-8090}:8090"
+      - "${METRICS_HOST_PORT:-9100}:9100"
+
+
+volumes:
+
+  open-blocklist-etc-data:
+  

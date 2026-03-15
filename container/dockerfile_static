@@ -1,0 +1,29 @@
+# ---- Build stage ----
+
+FROM cgr.dev/chainguard/go:latest AS builder
+ARG GIT_COMMIT
+ARG GO_BUILD_TAGS
+WORKDIR /src
+COPY ./src .
+RUN CGO_ENABLED=0 go build -tags "${GO_BUILD_TAGS}" -trimpath -ldflags="-s -w -X main.gBuildPlatform=static" -o /tmp/open-blocklist
+
+# ---- Capability stage ----
+
+FROM cgr.dev/chainguard/wolfi-base AS cap
+RUN apk add --no-cache libcap libcap-utils
+COPY --from=builder /tmp/open-blocklist /usr/local/bin/open-blocklist
+RUN setcap cap_net_bind_service=+ep /usr/local/bin/open-blocklist
+
+# Optional verification
+RUN getcap /usr/local/bin/open-blocklist
+
+# ---- Runtime stage ----
+
+FROM cgr.dev/chainguard/static:latest
+# copy the already-prepared file
+COPY --from=cap /usr/local/bin/open-blocklist /usr/local/bin/open-blocklist
+COPY --chown=nonroot:nonroot --from=builder /dev/null /tls/.keep
+
+USER nonroot
+EXPOSE 8080 8090 8443 9100
+ENTRYPOINT ["/usr/local/bin/open-blocklist"]
