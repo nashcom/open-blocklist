@@ -95,7 +95,7 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 5Gi
+            storage: 10Gi
 
 ---
 apiVersion: v1
@@ -190,7 +190,7 @@ metadata:
   name: open-blocklist
   namespace: open-blocklist
 spec:
-  replicas: 2
+  replicas: 1
 
   selector:
     matchLabels:
@@ -207,7 +207,7 @@ spec:
     spec:
       containers:
         - name: open-blocklist
-          image: nashcom/open-blocklist:latest
+          image: ghcr.io/nashcom/open-blocklist:latest
 
           ports:
             - containerPort: 8080
