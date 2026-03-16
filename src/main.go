@@ -4,13 +4,9 @@
 package main
 
 import (
-    "bytes"
-    "encoding/base64"
-    "encoding/hex"
     "encoding/json"
     "fmt"
     "flag"
-    "io"
     "os"
     "log"
     "net"
@@ -33,7 +29,6 @@ const (
     LOG_VERBOSE
     LOG_DEBUG
 )
-
 
 func (l LogLevel) String() string {
 
@@ -82,7 +77,6 @@ func ParseLogLevel(s string) (LogLevel, error) {
     return LOG_NONE, fmt.Errorf("Invalid log level: %s", s)
 }
 
-
 const (
 
     VersionMajor = 0
@@ -105,8 +99,10 @@ const (
     env_openbl_EtcEndpoint         = "OPENBL_ETCD_ENDPOINT"
     env_openbl_LogLevel            = "OPENBL_LOGLEVEL"
     env_openbl_LogJSON             = "OPENBL_LOGJSON"
+    env_openbl_MultiInstanceMode   = "OPENBL_MULTI_INSTANCE_MODE"
 
     defaultLogJSON                 = false
+    defaultMultiInstance           = true
     defaultLookupListenAddr        = ":8080"
     defaultApiListenAddr           = ":8090"
     defaultMetricsAddr             = ":9100"
@@ -117,21 +113,30 @@ const (
 // Declared to overwrite by build
 var gBuildPlatform = "unknown"
 
+var allowedPutParams = map[string]bool{
+    "duration":    true,
+    "expiration":  true,
+    "source":      true,
+    "return_code": true,
+}
 
 var (
 
-    gVersionStr       = fmt.Sprintf("%d.%d.%d", VersionMajor, VersionMinor, VersionPatch)
-    gGoVersion        = runtime.Version()
-    gGoVersionBuild   = parseGoVersionBuild(gGoVersion)
+    gVersionStr        = fmt.Sprintf("%d.%d.%d", VersionMajor, VersionMinor, VersionPatch)
+    gGoVersion         = runtime.Version()
+    gGoVersionBuild    = parseGoVersionBuild(gGoVersion)
 
-    rblPrefix         = fmt.Sprintf("%s/internal/%s", skyPrefix, rblZone)
-    rblPrefixScan     = rblPrefix + "/"
-    gExpCheckInterval = 1 * time.Minute
+    gMultiInstanceMode = true
+
+    rblPrefix          = fmt.Sprintf("%s/internal/%s", skyPrefix, rblZone)
+    rblPrefixScan      = rblPrefix + "/"
+    gExpCheckInterval  = 1 * time.Minute
 
     gLogJSON            bool
     gShutdownRequested  bool
     gMetricListnerAddr  string
     gLogLevel           LogLevel
+    gEtcdRevision       atomic.Int64
 
     gEndpointMetrics   = "/metrics"
     gEndpointHealth    = "/healthz"
@@ -140,7 +145,7 @@ var (
 
     gLookupListenAddr  = ":8080"
     gApiListenAddr     = ":8090"
-    gEtcdEndpoint       = defaultEtcEndpoint
+    gEtcdEndpoint      = defaultEtcEndpoint
 
 )
 
@@ -204,211 +209,17 @@ var store = Store{
     entries: make(map[string]*BlockEntry),
 }
 
-func b64(s string) string {
-    return base64.StdEncoding.EncodeToString([]byte(s))
-}
-
-func b64d(s string) string {
-    b, _ := base64.StdEncoding.DecodeString(s)
-    return string(b)
-}
-
-func etcdPut(key string, value interface{}) error {
-
-    data, _ := json.Marshal(value)
-
-    body := map[string]string{
-        "key":   b64(key),
-        "value": b64(string(data)),
-    }
-
-    payload, _ := json.Marshal(body)
-
-    resp, err := http.Post(
-        gEtcdEndpoint+"/v3/kv/put",
-        "application/json",
-        bytes.NewBuffer(payload),
-    )
-
-    if err != nil {
-        return err
-    }
-
-    defer resp.Body.Close()
-
-    if resp.StatusCode != 200 {
-        return fmt.Errorf("etcd put failed")
-    }
-
-    return nil
-}
-
-func etcdDelete(key string) {
-
-    body := map[string]string{
-        "key": b64(key),
-    }
-
-    data, _ := json.Marshal(body)
-
-    http.Post(
-        gEtcdEndpoint+"/v3/kv/deleterange",
-        "application/json",
-        bytes.NewBuffer(data),
-    )
-}
-
-func etcdRange(prefix string) ([]EtcdKV, error) {
-
-    body := map[string]string{
-        "key":       b64(prefix),
-        "range_end": b64(prefix + "\xff"),
-    }
-
-    data, _ := json.Marshal(body)
-
-    resp, err := http.Post(
-        gEtcdEndpoint+"/v3/kv/range",
-        "application/json",
-        bytes.NewBuffer(data),
-    )
-
-    if err != nil {
-        return nil, err
-    }
-
-    defer resp.Body.Close()
-
-    raw, _ := io.ReadAll(resp.Body)
-
-    var r struct {
-        Kvs []EtcdKV `json:"kvs"`
-    }
-
-    json.Unmarshal(raw, &r)
-
-    return r.Kvs, nil
-}
-
-func ipv4Parts(ip net.IP) []string {
-
-    v4 := ip.To4()
-
-    return []string{
-        fmt.Sprintf("%d", v4[0]),
-        fmt.Sprintf("%d", v4[1]),
-        fmt.Sprintf("%d", v4[2]),
-        fmt.Sprintf("%d", v4[3]),
-    }
-}
-
-func ipv6Nibbles(ip net.IP) []string {
-
-    ip = ip.To16()
-
-    hexstr := hex.EncodeToString(ip)
-
-    var out []string
-
-    for _, c := range hexstr {
-        out = append(out, string(c))
-    }
-
-    return out
-}
-
-func rblKey(ip net.IP) string {
-
-    if ip.To4() != nil {
-
-        p := ipv4Parts(ip)
-
-        return fmt.Sprintf("%s/%s/%s/%s/%s",
-            rblPrefix, p[0], p[1], p[2], p[3])
-    }
-
-    p := ipv6Nibbles(ip)
-
-    return fmt.Sprintf("%s/%s",
-        rblPrefix, strings.Join(p, "/"))
-}
-
-func reverseKey(ip net.IP) string {
-
-    if ip.To4() != nil {
-
-        p := ipv4Parts(ip)
-
-        return fmt.Sprintf("%s/arpa/in-addr/%s/%s/%s/%s",
-            skyPrefix,
-            p[0], p[1], p[2], p[3])
-    }
-
-    p := ipv6Nibbles(ip)
-
-    return fmt.Sprintf("%s/arpa/ip6/%s",
-        skyPrefix,
-        strings.Join(p, "/"))
-}
-
-func lookup(ip string) (*BlockEntry, bool) {
-
-    store.RLock()
-    entry, ok := store.entries[ip]
-    store.RUnlock()
-
-    return entry, ok
-}
-
-func epochToISO(ts int64) string {
-
-    if ts == 0 {
-        return ""
-    }
-
-    return time.Unix(ts, 0).UTC().Format(time.RFC3339)
-}
-
-func remainingSeconds(exp int64) int64 {
-
-    if exp == 0 {
-        return 0
-    }
-
-    now := time.Now().Unix()
-
-    remaining := exp - now
-
-    if remaining < 0 {
-        return 0
-    }
-
-    return remaining
-}
-
-func remainingDuration(exp int64) string {
-
-    if exp == 0 {
-        return "permanent"
-    }
-
-    r := remainingSeconds(exp)
-
-    return (time.Duration(r) * time.Second).String()
-}
-
-
 func entryToMap(entry *BlockEntry) map[string]interface{} {
 
     return map[string]interface{}{
         "ip": entry.IP,
         "source": entry.Source,
 
-        "first_seen"      : entry.FirstSeen,
-        "first_seen_iso"  : epochToISO(entry.FirstSeen),
+        "first_seen"        : entry.FirstSeen,
+        "first_seen_iso"    : epochToISO(entry.FirstSeen),
 
-        "expiration"      : entry.Expiration,
-        "expiration_iso"  : epochToISO(entry.Expiration),
+        "expiration"        : entry.Expiration,
+        "expiration_iso"    : epochToISO(entry.Expiration),
 
         "remaining_seconds" : remainingSeconds(entry.Expiration),
         "remaining_duration": remainingDuration(entry.Expiration),
@@ -416,7 +227,6 @@ func entryToMap(entry *BlockEntry) map[string]interface{} {
         "return_code": entry.ReturnCode,
     }
 }
-
 
 func handleLookup(w http.ResponseWriter, r *http.Request) {
 
@@ -506,12 +316,13 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     stats.RequestsWriteActive.Add(1)
     defer stats.RequestsWriteActive.Add(-1)
 
+    w.Header().Set("Content-Type", "application/json")
+
     ipstr := r.PathValue("ip")
 
     ip := net.ParseIP(ipstr)
-
     if ip == nil {
-        http.Error(w, "invalid ip", 400)
+        http.Error(w, "Invalid ip", http.StatusBadRequest)
         return
     }
 
@@ -526,6 +337,18 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
 
     q := r.URL.Query()
 
+    for k := range q {
+        if !allowedPutParams[k] {
+            http.Error(w, "Invalid parameter: "+k, http.StatusBadRequest)
+            return
+        }
+    }
+
+    if q.Get("duration") != "" && q.Get("expiration") != "" {
+        http.Error(w, "Duration and expiration cannot be used together", http.StatusBadRequest)
+        return
+    }
+
     if v := q.Get("source"); v != "" {
         entry.Source = v
     }
@@ -535,15 +358,23 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     }
 
     if v := q.Get("duration"); v != "" {
-
         d, err := time.ParseDuration(v)
-
         if err != nil {
-            http.Error(w, "invalid duration", 400)
+            http.Error(w, "Invalid duration", http.StatusBadRequest)
             return
         }
 
-        entry.Expiration = now + int64(d.Seconds())
+        entry.Expiration = now + int64(d/time.Second)
+    }
+
+    if v := q.Get("expiration"); v != "" {
+        t, err := time.Parse(time.RFC3339, v)
+        if err != nil {
+            http.Error(w, "Invalid expiration timestamp", http.StatusBadRequest)
+            return
+        }
+
+        entry.Expiration = t.Unix()
     }
 
     rbl := rblKey(ip)
@@ -566,9 +397,11 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     etcdPut(rbl, rblRecord)
     etcdPut(ptr, ptrRecord)
 
-    store.Lock()
-    store.entries[ipstr] = &entry
-    store.Unlock()
+    if gMultiInstanceMode == false {
+        store.Lock()
+        store.entries[ipstr] = &entry
+        store.Unlock()
+    }
 
     json.NewEncoder(w).Encode(entry)
 }
@@ -584,7 +417,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
     ip := net.ParseIP(ipstr)
 
     if ip == nil {
-        http.Error(w, "invalid ip", 400)
+        http.Error(w, "Invalid ip", 400)
         return
     }
 
@@ -594,21 +427,29 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
     etcdDelete(rbl)
     etcdDelete(ptr)
 
-    store.Lock()
-    delete(store.entries, ipstr)
-    store.Unlock()
+    if gMultiInstanceMode == false {
+        store.Lock()
+        delete(store.entries, ipstr)
+        store.Unlock()
+    }
 
     w.WriteHeader(http.StatusNoContent)
 }
 
 func handleList(w http.ResponseWriter, r *http.Request) {
-
     stats.RequestsList.Add(1)
+
+    w.Header().Set("Content-Type", "application/json")
 
     store.RLock()
     defer store.RUnlock()
 
-    var result []map[string]interface{}
+    if len(store.entries) == 0 {
+        w.Write([]byte("{}"))
+        return
+    }
+
+    result := make([]map[string]interface{}, 0, len(store.entries))
 
     for _, entry := range store.entries {
         result = append(result, entryToMap(entry))
@@ -623,48 +464,6 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 
     w.WriteHeader(http.StatusOK)
     w.Write([]byte("OK"))
-}
-
-func loadFromEtcd() {
-
-    kvs, err := etcdRange(rblPrefixScan)
-
-    if err != nil {
-        logFatal("etcd load failed: %v", err)
-        return
-    }
-
-    for _, kv := range kvs {
-
-        key := b64d(kv.Key)
-        val := b64d(kv.Value)
-
-        var rec DNSRecord
-
-        json.Unmarshal([]byte(val), &rec)
-
-        parts := strings.Split(key, "/")
-
-        if len(parts) < 4 {
-            continue
-        }
-
-        ip := fmt.Sprintf("%s.%s.%s.%s",
-            parts[len(parts)-4],
-            parts[len(parts)-3],
-            parts[len(parts)-2],
-            parts[len(parts)-1])
-
-        store.entries[ip] = &BlockEntry{
-            IP:         ip,
-            Source:     rec.Source,
-            ReturnCode: rec.Host,
-            FirstSeen:  rec.FirstSeen,
-            Expiration: rec.Expiration,
-        }
-    }
-
-    logMsg("Loaded entries from etcd: %d", len(store.entries))
 }
 
 
@@ -712,11 +511,10 @@ func expirationWorker() {
             delete(store.entries, ipstr)
             store.Unlock()
 
-            logMsg("Expired block removed: %u", ipstr)
+            logMsg("Expired block removed: %s", ipstr)
         }
     }
 }
-
 
 func RegisterReadHandler(mux *http.ServeMux) {
 
@@ -736,7 +534,6 @@ func RegisterWriteHandler(mux *http.ServeMux) {
 
 }
 
-
 func startReadListener(addr string) {
 
     mux := http.NewServeMux()
@@ -752,7 +549,6 @@ func startReadListener(addr string) {
         }
     }()
 }
-
 
 func startWriteListener(addr string) {
 
@@ -798,7 +594,6 @@ func handleSignals() {
     }
 }
 
-
 func shutdown() {
 
     logLine("Shutting down ...")
@@ -809,13 +604,13 @@ func shutdown() {
     logLine("Shutdown completed")
 }
 
-
 func main() {
 
     // Have full control over logging
     log.SetFlags(0)
 
     // Always read this first
+    gMultiInstanceMode = getEnvBool     (env_openbl_MultiInstanceMode, defaultMultiInstance)
     gLogJSON           = getEnvBool     (env_openbl_LogJSON, defaultLogJSON)
     gLogLevel          = getEnvLogLevel (env_openbl_LogLevel, defaultLogLevel)
     gMetricListnerAddr = getEnv         (env_openbl_MetricsListenAddr, defaultMetricsAddr)
@@ -856,6 +651,7 @@ func main() {
     showCfg("API      listen address",      env_openbl_ApiListenAddr,     formatStr(defaultApiListenAddr),    gApiListenAddr)
     showCfg("Metrics  listen address",      env_openbl_MetricsListenAddr, formatStr(defaultMetricsAddr),      gMetricListnerAddr)
     showCfg("etcd endpoint URL",            env_openbl_EtcEndpoint,       formatStr(defaultEtcEndpoint),      gEtcdEndpoint)
+    showCfg("Multi instance mode",          env_openbl_MultiInstanceMode, defaultMultiInstance,               gMultiInstanceMode)
     showCfg(logLevelValues,                 env_openbl_LogLevel,          defaultLogLevel,                    gLogLevel)
     showCfg("Log output is in JSON format", env_openbl_LogJSON,           defaultLogJSON,                     gLogJSON)
 
@@ -873,6 +669,14 @@ func main() {
 
     go expirationWorker()
 
+    if gMultiInstanceMode {
+        logMsg("Running in multi-instance mode (watch enabled)")
+        startEtcWatcher()
+
+    } else {
+        logMsg("Running in single-instance mode")
+    }
+
     startReadListener(gLookupListenAddr)
     startWriteListener(gApiListenAddr)
 
@@ -881,5 +685,4 @@ func main() {
     }
 
     select {}
-
 }

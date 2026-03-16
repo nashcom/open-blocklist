@@ -1,30 +1,78 @@
 # Open Blocklist
 
-**Open Blocklist** is a distributed IP reputation and blocklist platform providing **DNS blocklists (RBL/DNSBL)**, **reverse DNS responses**, and **high-performance HTTP APIs** for lookups and authorization.
+[![HCL Ambassador](https://img.shields.io/static/v1?label=HCL&message=Ambassador&color=006CB7&labelColor=DDDDDD&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjYuMjQgODYuMjgiPjxkZWZzPjxzdHlsZT4uY2xzLTF7ZmlsbDojMDA2Y2I3O308L3N0eWxlPjwvZGVmcz48ZyBpZD0iTGF5ZXJfMiIgZGF0YS1uYW1lPSJMYXllciAyIj48ZyBpZD0iRWJlbmVfMSIgZGF0YS1uYW1lPSJFYmVuZSAxIj48cG9seWdvbiBjbGFzcz0iY2xzLTEiIHBvaW50cz0iMTI2LjI0IDQzLjE0IDkxLjY4IDQzLjE0IDcyLjIgODYuMjggMTA2Ljc2IDg2LjI4IDEyNi4yNCA0My4xNCIvPjxwb2x5Z29uIGNsYXNzPSJjbHMtMSIgcG9pbnRzPSIwIDQzLjE0IDM0LjU2IDQzLjE0IDU0LjA0IDg2LjI4IDE5LjQ4IDg2LjI4IDAgNDMuMTQiLz48cG9seWdvbiBjbGFzcz0iY2xzLTEiIHBvaW50cz0iNjMuMTIgMCA0My42NCA0My4xNCA2My4xMiA4Ni4yOCA4Mi42IDQzLjE0IDYzLjEyIDAiLz48L2c+PC9nPjwvc3ZnPg==)](https://www.hcl-software.com/about/hcl-ambassadors)
+[![Nash!Com Blog](https://img.shields.io/badge/Blog-Nash!Com-blue)](https://blog.nashcom.de)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nashcom/buil-test/blob/main/LICENSE)
 
-The system is designed for high-throughput environments and modern container deployments.
-It combines **CoreDNS**, **etcd**, and the **Open Blocklist service** to provide scalable blocklist management and querying.
 
-Open Blocklist can be used by mail systems, security gateways, reverse proxies, firewalls, and reputation services.
+**Open Blocklist** is a distributed IP reputation and blocklist platform providing **DNS blocklists (RBL/DNSBL)**, **reverse DNS responses**, and **high-performance HTTP APIs** for reputation lookups and authorization.
+
+The system is designed for **high-throughput environments** and **modern container-based deployments**.
+It combines **CoreDNS**, **etcd**, and the **Open Blocklist service** written in Go to provide scalable blocklist management and high-performance querying.
+Open Blocklist can be used by **mail systems**, **security gateways**, **reverse proxies**, **firewalls**, and other **reputation or abuse detection services**.
 
 
 # Use Cases
 
 Open Blocklist can be used for:
 
-- Mail server reputation checks
-- DNS blocklists (RBL / DNSBL)
-- Reverse DNS reputation responses - for example to use with NGINX `$remote_host`
-- Sub request authentication requests - for example for NGINX passing the `remote_addr`)
-- API-based reputation checks
-- Security gateways
-- Abuse detection systems
-- Integration with intrusion detection tools such as CrowdSec
+* Mail server reputation checks
+* DNS blocklists (RBL / DNSBL)
+* Reverse DNS reputation responses (for example with NGINX `$remote_host`)
+* Subrequest authentication (for example with NGINX passing `$remote_addr`)
+* API-based reputation checks
+* Security gateways and abuse detection systems
+* Integration with intrusion detection tools such as **CrowdSec**
+
+
+# Components
+
+Open Blocklist consists of three containers.
+
+| Container               | Purpose                                       |
+| ----------------------- | --------------------------------------------- |
+| **open-blocklist-main** | Blocklist API and lookup service              |
+| **open-blocklist-dns**  | CoreDNS DNS blocklist and reverse DNS service |
+| **open-blocklist-etcd** | Distributed key-value storage backend         |
 
 
 # Architecture
 
-Open Blocklist runs as multiple cooperating services.
+## **[CoreDNS](https://coredns.io/)** Server
+
+CoreDNS provides the DNS interface for the blocklist.
+It implements the DNS blocklist functionality using its built-in **etcd integration**.
+This allows DNS queries to be answered directly from the blocklist entries stored in etcd.
+
+
+## **[etcd](https://etcd.io/)** Backend Storage
+
+**etcd** provides the distributed key-value storage used by the platform.
+
+Blocklist entries are stored in etcd for:
+
+* persistence
+* synchronization between services
+* integration with CoreDNS
+
+CoreDNS reads DNS records directly from etcd using the SkyDNS-compatible layout.
+
+
+## **[Go](https://go.dev/)** Based Application
+
+The Open Blocklist service is written in **Go**.
+The application provides the glue between the components and exposes REST API endpoints.
+It maintains an **in-memory copy of all blocklist entries** using a high-performance map to ensure extremely fast API lookups and updates.
+
+
+### Data Flow
+
+1. At startup, all data is loaded from **etcd** into memory.
+2. API lookups are served directly from the in-memory map for maximum performance.
+3. Updates are applied in memory and persisted to **etcd**.
+4. CoreDNS reads updated data from etcd.
+5. A background process enforces expiration policies and removes expired entries from both memory and **etcd**.
+
 
 ```
           +---------------------------+
@@ -56,20 +104,11 @@ Open Blocklist runs as multiple cooperating services.
                       etcd
 ```
 
-# Components
-
-Open Blocklist consists of three containers.
-
-| Container               | Purpose                                       |
-| ----------------------- | --------------------------------------------- |
-| **open-blocklist-main** | Blocklist API and lookup service              |
-| **open-blocklist-dns**  | CoreDNS DNS blocklist and reverse DNS service |
-| **open-blocklist-etcd** | Distributed key-value storage backend         |
-
+---
 
 # Quick Start
 
-The repository contains a complete **Docker Compose setup**.
+The repository contains a **Docker Compose setup** to quickly start the service.
 
 Start the system:
 
@@ -104,19 +143,22 @@ http://localhost:8090
 DNS: localhost:8053
 ```
 
-**Note**: Ports can be changed in configuration if ports are already in use.
+**Note:** Ports can be changed in the configuration if they are already in use.
 
 
-# How to build the image
+# Building the Image
 
-The project comes with a build.sh script, which builds the image automatically.
+The project includes a `build.sh` script.
+By default, an **Alpine-based image** is used.
 
 ```
 ./build.sh
 ```
 
 
-# Blocking an IP
+# Functionality
+
+## Blocking an IP
 
 Add an IP address to the blocklist:
 
@@ -149,7 +191,7 @@ curl -X DELETE localhost:8090/block/1.2.3.4
 ```
 
 
-# HTTP Lookup API
+## HTTP Lookup API
 
 Query the blocklist:
 
@@ -175,7 +217,7 @@ Example response:
 ```
 
 
-# HTTP Metadata Headers
+## HTTP Metadata Headers
 
 The lookup endpoint also returns useful metadata via HTTP headers.
 
@@ -195,7 +237,7 @@ X-Blocklist-Remaining-Duration: permanent
 ```
 
 
-# Authorization Endpoint
+## Authorization Endpoint
 
 The `/auth` endpoint provides a fast allow/deny check.
 
@@ -226,7 +268,7 @@ HTTP/1.1 204 No Content
 This endpoint is useful for integration with reverse proxies or network gateways.
 
 
-# DNS Blocklist (RBL)
+## DNS Blocklist (RBL)
 
 Query the DNS blocklist:
 
@@ -241,7 +283,7 @@ Response:
 ```
 
 
-# Reverse DNS Lookup
+## Reverse DNS Lookup
 
 Blocked IPs can also be queried via reverse DNS.
 
@@ -256,7 +298,7 @@ blocked.internal.
 ```
 
 
-# IPv6 Support
+## IPv6 Support
 
 IPv6 addresses can also be blocked.
 
@@ -278,7 +320,10 @@ dig @127.0.0.1 -p 55 \
 ```
 
 
-# Inspecting Stored Entries
+# Troubleshooting
+
+
+## Inspecting Stored Entries
 
 Blocklist entries are stored in etcd using a SkyDNS-compatible layout.
 
@@ -297,7 +342,7 @@ Example:
 ```
 
 
-# Watching Updates
+## Watching Updates
 
 You can watch blocklist changes in real time.
 
@@ -306,5 +351,4 @@ docker exec open-blocklist-etcd \
 etcdctl watch /skydns/internal/open-blocklist --prefix
 ```
 
-This will stream updates whenever entries are created, modified, or deleted.
-
+This streams updates whenever entries are created, modified, or deleted.
