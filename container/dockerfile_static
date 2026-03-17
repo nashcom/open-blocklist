@@ -25,5 +25,5 @@ COPY --from=cap /usr/local/bin/open-blocklist /usr/local/bin/open-blocklist
 COPY --chown=nonroot:nonroot --from=builder /dev/null /tls/.keep
 
 USER nonroot
-EXPOSE 8080 8090 8443 9100
+EXPOSE 5353 8080 8090 8443 9100
 ENTRYPOINT ["/usr/local/bin/open-blocklist"]

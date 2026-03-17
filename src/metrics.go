@@ -8,6 +8,8 @@ import (
     "fmt"
     "net/http"
     "strconv"
+    "strings"
+    "runtime/metrics"
 )
 
 func writeMetricString(w *bufio.Writer, name string, help string, metricType string, value string, labels map[string]string) {
@@ -162,6 +164,48 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
         stats.ConfigErrors.Load(),
         nil)
 
+    // DNS stats
+
+    writeMetric(
+        bw,
+        "open-blocklist_dns_invalid_query_total",
+        "Total invalid DNS queries",
+        "counter",
+        stats.ReqDnsInvalidQuery.Load(),
+        nil)
+
+    writeMetric(
+        bw,
+        "open-blocklist_dns_wrong_zone_total",
+        "Total DNS queries outside RBL zone",
+        "counter",
+        stats.ReqDnsWrongZone.Load(),
+        nil)
+
+    writeMetric(
+        bw,
+        "open-blocklist_dns_blocked_total",
+        "Total DNS queries resulting in a block",
+        "counter",
+        stats.ReqDnsBlocked.Load(),
+        nil)
+
+    writeMetric(
+        bw,
+        "open-blocklist_dns_not_listed_total",
+        "Total DNS queries not listed (NXDOMAIN)",
+        "counter",
+        stats.ReqDnsNotListed.Load(),
+        nil)
+
+    writeMetric(
+        bw,
+        "open-blocklist_dns_other_query_type_total",
+        "Total DNS queries with unsupported query types",
+        "counter",
+        stats.ReqDnsOtherQueryType.Load(),
+        nil)
+
     // Endpoint stats
 
     writeMetric(
@@ -227,6 +271,8 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
         "counter",
         stats.ReadinessFailure.Load(),
         nil)
+
+    writeRuntimeMetrics(bw)
 
     bw.Flush()
 }
@@ -330,3 +376,76 @@ func startMetricsListener(addr string) {
         }
     }()
 }
+
+
+var runtimeMetricNames = []string{
+    "/memory/classes/heap/objects:bytes",
+    "/memory/classes/heap/free:bytes",
+    "/memory/classes/heap/released:bytes",
+    "/memory/classes/total:bytes",
+
+    "/gc/cycles/total:gc-cycles",
+    "/gc/heap/allocs:bytes",
+    "/gc/heap/frees:bytes",
+
+    "/sched/goroutines:goroutines",
+
+    "/cpu/classes/user:cpu-seconds",
+    "/cpu/classes/system:cpu-seconds",
+    "/cpu/classes/gc:cpu-seconds",
+}
+
+var runtimeSamples []metrics.Sample
+
+func initRuntimeMetrics() {
+    runtimeSamples = make([]metrics.Sample, len(runtimeMetricNames))
+
+    for i, n := range runtimeMetricNames {
+        runtimeSamples[i].Name = n
+    }
+}
+
+func writeRuntimeMetrics(bw *bufio.Writer) {
+    if runtimeSamples == nil {
+        initRuntimeMetrics()
+    }
+
+    metrics.Read(runtimeSamples)
+
+    for _, s := range runtimeSamples {
+        name := sanitizeMetricName(s.Name)
+
+        switch s.Value.Kind() {
+
+        case metrics.KindUint64:
+
+            writeMetric(
+                bw,
+                "go_"+name,
+                "Go runtime metric "+s.Name,
+                "gauge",
+                int64 (s.Value.Uint64()),
+                nil)
+
+        case metrics.KindFloat64:
+
+            writeMetricFloat(
+                bw,
+                "go_"+name,
+                "Go runtime metric "+s.Name,
+                "gauge",
+                s.Value.Float64(),
+                nil)
+
+        }
+    }
+}
+
+
+func sanitizeMetricName(n string) string {
+    n = strings.ReplaceAll(n, "/", "_")
+    n = strings.ReplaceAll(n, ":", "_")
+    n = strings.ReplaceAll(n, "-", "_")
+    return n
+}
+

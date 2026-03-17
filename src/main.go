@@ -95,6 +95,7 @@ const (
 
     env_openbl_LookupListenAddr    = "OPENBL_LOOKUP_LISTEN_ADDR"
     env_openbl_ApiListenAddr       = "OPENBL_API_LISTEN_ADDR"
+    env_openbl_DNSListenAddr       = "OPENBL_DNS_LISTEN_ADDR"
     env_openbl_MetricsListenAddr   = "OPENBL_METRICS_LISTEN_ADDR"
     env_openbl_EtcEndpoint         = "OPENBL_ETCD_ENDPOINT"
     env_openbl_LogLevel            = "OPENBL_LOGLEVEL"
@@ -105,7 +106,8 @@ const (
     defaultMultiInstance           = true
     defaultLookupListenAddr        = ":8080"
     defaultApiListenAddr           = ":8090"
-    defaultMetricsAddr             = ":9100"
+    defaultMetricsListenAddr       = ":9100"
+    defaultDNSListenAddr           = ":5353"
     defaultLogLevel                = LOG_ERROR
     defaultEtcEndpoint             = "http://etcd:2379"
 )
@@ -134,33 +136,51 @@ var (
 
     gLogJSON            bool
     gShutdownRequested  bool
-    gMetricListnerAddr  string
     gLogLevel           LogLevel
     gEtcdRevision       atomic.Int64
+
+    gLookupListenAddr   string
+    gApiListenAddr      string
+    gDNSListenAddr      string
+    gMetricListnAddr    string
+
+    gRBLZone           = "open-blocklist.internal."
 
     gEndpointMetrics   = "/metrics"
     gEndpointHealth    = "/healthz"
     gEndpointLive      = "/livez"
     gEndpointReady     = "/readyz"
 
-    gLookupListenAddr  = ":8080"
-    gApiListenAddr     = ":8090"
     gEtcdEndpoint      = defaultEtcEndpoint
 
 )
 
 type EtcdKV struct {
-    Key   string `json:"key"`
-    Value string `json:"value"`
+    Key            string `json:"key"`
+    Value          string `json:"value"`
+    CreateRevision string `json:"create_revision"`
+    ModRevision    string `json:"mod_revision"`
+    Version        string `json:"version"`
 }
 
 type DNSRecord struct {
-    Version    int    `json:"v"`
-    Host       string `json:"host"`
-    TTL        int    `json:"ttl"`
-    Source     string `json:"source"`
-    FirstSeen  int64  `json:"first_seen"`
-    Expiration int64  `json:"expiration"`
+    Version        int    `json:"v"`
+    TTL            int    `json:"ttl"`
+    FirstSeen      int64  `json:"first_seen"`
+    Expiration     int64  `json:"expiration"`
+    CreateRevision int64  `json:"create_revision"`
+    ModRevision    int64  `json:"mod_revision"`
+    Host           string `json:"host"`
+    Source         string `json:"source"`
+}
+
+type DNSRecordPut struct {
+    Version        int    `json:"v"`
+    TTL            int    `json:"ttl"`
+    FirstSeen      int64  `json:"first_seen"`
+    Expiration     int64  `json:"expiration"`
+    Host           string `json:"host"`
+    Source         string `json:"source"`
 }
 
 type PTRRecord struct {
@@ -169,11 +189,13 @@ type PTRRecord struct {
 }
 
 type BlockEntry struct {
-    IP         string
-    Source     string
-    ReturnCode string
-    FirstSeen  int64
-    Expiration int64
+    IP             string
+    Source         string
+    ReturnCode     string
+    CreateRevision int64
+    ModRevision    int64
+    FirstSeen      int64
+    Expiration     int64
 }
 
 type Store struct {
@@ -201,6 +223,12 @@ type Stats struct
     LivenessFailure         atomic.Int64
     ReadinessFailure        atomic.Int64
     ReadinessSuccess        atomic.Int64
+
+    ReqDnsInvalidQuery      atomic.Int64
+    ReqDnsWrongZone         atomic.Int64
+    ReqDnsBlocked           atomic.Int64
+    ReqDnsNotListed         atomic.Int64
+    ReqDnsOtherQueryType    atomic.Int64
 }
 
 var stats Stats
@@ -212,8 +240,10 @@ var store = Store{
 func entryToMap(entry *BlockEntry) map[string]interface{} {
 
     return map[string]interface{}{
-        "ip": entry.IP,
-        "source": entry.Source,
+        "ip"                : entry.IP,
+        "source"            : entry.Source,
+        "create_revision"   : entry.CreateRevision,
+        "mod_revision"      : entry.ModRevision,
 
         "first_seen"        : entry.FirstSeen,
         "first_seen_iso"    : epochToISO(entry.FirstSeen),
@@ -247,6 +277,8 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 
         w.Header().Set("X-Service",                      "open-blocklist")
         w.Header().Set("X-Blocklist-IP",                 entry.IP)
+        w.Header().Set("X-Blocklist-CreateRevision",     fmt.Sprintf("%d", entry.CreateRevision))
+        w.Header().Set("X-Blocklist-ModRevision",        fmt.Sprintf("%d", entry.ModRevision))
         w.Header().Set("X-Blocklist-Source",             entry.Source)
         w.Header().Set("X-Blocklist-Return",             entry.ReturnCode)
 
@@ -271,8 +303,10 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "text/plain")
 
         fmt.Fprintf(w,
-            "blocked=true\nip=%s\nsource=%s\nfirst_seen=%d\nfirst_seen_iso=%s\nexpiration=%d\nexpiration_iso=%s\nremaining_seconds=%d\nremaining_duration=%s\n",
+            "blocked=true\nip=%s\ncreate_revision=%d\nmod_revision=%d\nsource=%s\nfirst_seen=%d\nfirst_seen_iso=%s\nexpiration=%d\nexpiration_iso=%s\nremaining_seconds=%d\nremaining_duration=%s\n",
             entry.IP,
+            entry.CreateRevision,
+            entry.ModRevision,
             entry.Source,
             entry.FirstSeen,
             epochToISO(entry.FirstSeen),
@@ -380,7 +414,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     rbl := rblKey(ip)
     ptr := reverseKey(ip)
 
-    rblRecord := DNSRecord{
+    rblRecord := DNSRecordPut{
         Version:    1,
         Host:       entry.ReturnCode,
         TTL:        300,
@@ -540,9 +574,13 @@ func startReadListener(addr string) {
 
     RegisterReadHandler (mux)
 
-    go func() {
-        logListerner("Lookup", addr)
+    logListerner("Lookup", addr)
 
+    if addr == "" {
+        return
+    }
+
+    go func() {
         err := http.ListenAndServe(addr, mux)
         if err != nil {
             logMsg("Lookup listener stopped: %v", err)
@@ -552,14 +590,18 @@ func startReadListener(addr string) {
 
 func startWriteListener(addr string) {
 
+    logListerner("API", addr)
+
+    if addr == "" {
+        return
+    }
+
     mux := http.NewServeMux()
 
-    RegisterReadHandler (mux)
+    RegisterReadHandler  (mux)
     RegisterWriteHandler (mux)
 
-
     go func() {
-        logListerner("API", addr)
         err := http.ListenAndServe(addr, mux)
         if err != nil {
             logMsg("API Listener stopped: %v", err)
@@ -613,7 +655,10 @@ func main() {
     gMultiInstanceMode = getEnvBool     (env_openbl_MultiInstanceMode, defaultMultiInstance)
     gLogJSON           = getEnvBool     (env_openbl_LogJSON, defaultLogJSON)
     gLogLevel          = getEnvLogLevel (env_openbl_LogLevel, defaultLogLevel)
-    gMetricListnerAddr = getEnv         (env_openbl_MetricsListenAddr, defaultMetricsAddr)
+    gLookupListenAddr  = getEnv         (env_openbl_LogLevel,          defaultLookupListenAddr)
+    gApiListenAddr     = getEnv         (env_openbl_ApiListenAddr,     defaultApiListenAddr)
+    gDNSListenAddr     = getEnv         (env_openbl_DNSListenAddr,     defaultDNSListenAddr)
+    gMetricListnAddr   = getEnv         (env_openbl_MetricsListenAddr, defaultMetricsListenAddr)
     gEtcdEndpoint      = getEnv         (env_openbl_EtcEndpoint, defaultEtcEndpoint)
 
     var printVersion  = flag.Bool("version",   false, "print version")
@@ -647,13 +692,14 @@ func main() {
 
     logLevelValues := fmt.Sprintf("%s|%s|%s|%s|%s", LOG_NONE, LOG_ERROR, LOG_INFO, LOG_VERBOSE, LOG_DEBUG)
 
-    showCfg("Lookup   listen address",      env_openbl_LookupListenAddr,  formatStr(defaultLookupListenAddr), gLookupListenAddr)
-    showCfg("API      listen address",      env_openbl_ApiListenAddr,     formatStr(defaultApiListenAddr),    gApiListenAddr)
-    showCfg("Metrics  listen address",      env_openbl_MetricsListenAddr, formatStr(defaultMetricsAddr),      gMetricListnerAddr)
-    showCfg("etcd endpoint URL",            env_openbl_EtcEndpoint,       formatStr(defaultEtcEndpoint),      gEtcdEndpoint)
-    showCfg("Multi instance mode",          env_openbl_MultiInstanceMode, defaultMultiInstance,               gMultiInstanceMode)
-    showCfg(logLevelValues,                 env_openbl_LogLevel,          defaultLogLevel,                    gLogLevel)
-    showCfg("Log output is in JSON format", env_openbl_LogJSON,           defaultLogJSON,                     gLogJSON)
+    showCfg("Lookup listen address",        env_openbl_LookupListenAddr,  formatStr(defaultLookupListenAddr),  gLookupListenAddr)
+    showCfg("API    listen address",        env_openbl_ApiListenAddr,     formatStr(defaultApiListenAddr),     gApiListenAddr)
+    showCfg("DNS    listen address",        env_openbl_DNSListenAddr,     formatStr(defaultDNSListenAddr),     gDNSListenAddr)
+    showCfg("Metricslisten address",        env_openbl_MetricsListenAddr, formatStr(defaultMetricsListenAddr), gMetricListnAddr)
+    showCfg("etcd endpoint URL",            env_openbl_EtcEndpoint,       formatStr(defaultEtcEndpoint),       gEtcdEndpoint)
+    showCfg("Multi instance mode",          env_openbl_MultiInstanceMode, defaultMultiInstance,                gMultiInstanceMode)
+    showCfg(logLevelValues,                 env_openbl_LogLevel,          defaultLogLevel,                     gLogLevel)
+    showCfg("Log output is in JSON format", env_openbl_LogJSON,           defaultLogJSON,                      gLogJSON)
 
     showRuntimeInfo()
     logSpace()
@@ -667,6 +713,16 @@ func main() {
 
     logSpace()
 
+    startReadListener (gLookupListenAddr)
+    startWriteListener(gApiListenAddr)
+    startDNSListener  (gDNSListenAddr)
+
+    if gMetricListnAddr != "" {
+        startMetricsListener(gMetricListnAddr)
+    }
+
+    time.Sleep(2 * time.Second)
+
     go expirationWorker()
 
     if gMultiInstanceMode {
@@ -675,13 +731,6 @@ func main() {
 
     } else {
         logMsg("Running in single-instance mode")
-    }
-
-    startReadListener(gLookupListenAddr)
-    startWriteListener(gApiListenAddr)
-
-    if gMetricListnerAddr != "" {
-        startMetricsListener(gMetricListnerAddr)
     }
 
     select {}

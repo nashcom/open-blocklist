@@ -12,11 +12,17 @@ metadata:
 data:
   Corefile: |
     open-blocklist.internal {
+        forward . 127.0.0.1:5353
+        cache 10
+        log
+        errors
+    }
+
+    open-blocklist-etcd.internal {
         etcd {
             path /skydns
-            endpoint http://etcd:2379
+            endpoint http://127.0.0.1:2379
         }
-
         cache 10
         log
         errors
@@ -25,10 +31,9 @@ data:
     in-addr.arpa {
         etcd {
             path /skydns
-            endpoint http://etcd:2379
+            endpoint http://127.0.0.1:2379
             fallthrough
         }
-
         forward . /etc/resolv.conf
         cache 30
         log
@@ -39,158 +44,40 @@ data:
 apiVersion: v1
 kind: Service
 metadata:
-  name: etcd
+  name: open-blocklist
   namespace: open-blocklist
 spec:
   clusterIP: None
   selector:
-    app: etcd
+    app: open-blocklist
   ports:
-    - name: client
-      port: 2379
-      targetPort: 2379
+    - name: lookup
+      port: 8080
+      targetPort: 8080
+    - name: write
+      port: 8090
+      targetPort: 8090
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+    - name: dns-udp
+      port: 53
+      targetPort: 53
+      protocol: UDP
+    - name: dns-tcp
+      port: 53
+      targetPort: 53
+      protocol: TCP
 
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: etcd
-  namespace: open-blocklist
-spec:
-  serviceName: etcd
-  replicas: 1
-
-  selector:
-    matchLabels:
-      app: etcd
-
-  template:
-    metadata:
-      labels:
-        app: etcd
-
-    spec:
-      containers:
-        - name: etcd
-          image: registry.k8s.io/etcd:3.5.15-0
-
-          command:
-            - /usr/local/bin/etcd
-            - --advertise-client-urls=http://0.0.0.0:2379
-            - --listen-client-urls=http://0.0.0.0:2379
-            - --data-dir=/etcd-data
-
-          ports:
-            - containerPort: 2379
-              name: client
-
-          volumeMounts:
-            - name: etcd-data
-              mountPath: /etcd-data
-
-  volumeClaimTemplates:
-    - metadata:
-        name: etcd-data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 10Gi
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: open-blocklist-dns
-  namespace: open-blocklist
-spec:
-  selector:
-    app: open-blocklist-dns
-
-  ports:
-    - name: dns-udp
-      port: 53
-      protocol: UDP
-      targetPort: 53
-
-    - name: dns-tcp
-      port: 53
-      protocol: TCP
-      targetPort: 53
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: open-blocklist-dns
-  namespace: open-blocklist
-spec:
-  replicas: 2
-
-  selector:
-    matchLabels:
-      app: open-blocklist-dns
-
-  template:
-    metadata:
-      labels:
-        app: open-blocklist-dns
-
-    spec:
-      containers:
-        - name: coredns
-          image: coredns/coredns:latest
-          args:
-            - -conf
-            - /Corefile
-
-          ports:
-            - containerPort: 53
-              protocol: UDP
-            - containerPort: 53
-              protocol: TCP
-
-          volumeMounts:
-            - name: config
-              mountPath: /Corefile
-              subPath: Corefile
-
-      volumes:
-        - name: config
-          configMap:
-            name: open-blocklist-coredns
-
----
-apiVersion: v1
-kind: Service
-metadata:
   name: open-blocklist
   namespace: open-blocklist
 spec:
-  selector:
-    app: open-blocklist
-
-  ports:
-    - name: lookup
-      port: 8080
-      targetPort: 8080
-
-    - name: write
-      port: 8090
-      targetPort: 8090
-
-    - name: metrics
-      port: 9100
-      targetPort: 9100
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: open-blocklist
-  namespace: open-blocklist
-spec:
-  replicas: 1
+  serviceName: open-blocklist
+  replicas: 3
 
   selector:
     matchLabels:
@@ -206,9 +93,34 @@ spec:
 
     spec:
       containers:
+
+        - name: etcd
+          image: registry.k8s.io/etcd:3.5.15-0
+          command:
+            - /usr/local/bin/etcd
+            - --name=$(POD_NAME)
+            - --data-dir=/etcd-data
+            - --listen-client-urls=http://127.0.0.1:2379
+            - --advertise-client-urls=http://127.0.0.1:2379
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --initial-advertise-peer-urls=http://$(POD_NAME).open-blocklist.open-blocklist.svc.cluster.local:2380
+            - --initial-cluster=open-blocklist-0=http://open-blocklist-0.open-blocklist.open-blocklist.svc.cluster.local:2380,open-blocklist-1=http://open-blocklist-1.open-blocklist.open-blocklist.svc.cluster.local:2380,open-blocklist-2=http://open-blocklist-2.open-blocklist.open-blocklist.svc.cluster.local:2380
+            - --initial-cluster-state=new
+            - --initial-cluster-token=open-blocklist-etcd
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - containerPort: 2380
+              name: etcd-peer
+          volumeMounts:
+            - name: etcd-data
+              mountPath: /etcd-data
+
         - name: open-blocklist
           image: ghcr.io/nashcom/open-blocklist:latest
-
           ports:
             - containerPort: 8080
               name: lookup
@@ -216,7 +128,43 @@ spec:
               name: write
             - containerPort: 9100
               name: metrics
-
+            - containerPort: 5353
+              name: dns-udp
+              protocol: UDP
+            - containerPort: 5353
+              name: dns-tcp
+              protocol: TCP
           env:
             - name: OPENBL_ETCD_ENDPOINT
-              value: http://etcd:2379
+              value: http://127.0.0.1:2379
+
+        - name: coredns
+          image: coredns/coredns:1.11.3
+          args:
+            - -conf
+            - /Corefile
+          ports:
+            - containerPort: 53
+              name: dns-udp
+              protocol: UDP
+            - containerPort: 53
+              name: dns-tcp
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /Corefile
+              subPath: Corefile
+
+      volumes:
+        - name: config
+          configMap:
+            name: open-blocklist-coredns
+
+  volumeClaimTemplates:
+    - metadata:
+        name: etcd-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

@@ -17,6 +17,11 @@ import (
     "time"
 )
 
+func parseInt64(s string) int64 {
+    v, _ := strconv.ParseInt(s, 10, 64)
+    return v
+}
+
 func showRuntimeInfo() {
 
     logSpace()
@@ -172,11 +177,11 @@ func parseGoVersionBuild(v string) int64 {
     var major, minor, patch int64
 
     if len(parts) > 0 {
-        major, _ = strconv.ParseInt(parts[0], 10, 64)
+        major = parseInt64(parts[0])
     }
 
     if len(parts) > 1 {
-        minor, _ = strconv.ParseInt(parts[1], 10, 64)
+        minor =parseInt64(parts[1])
     }
 
     if len(parts) > 2 {
@@ -189,7 +194,7 @@ func parseGoVersionBuild(v string) int64 {
             }
         }
 
-        patch, _ = strconv.ParseInt(p, 10, 64)
+        patch = parseInt64(p)
     }
 
     return major*10000 + minor*100 + patch
@@ -226,43 +231,6 @@ func readOSRelease() (map[string]string, error) {
 var httpClient = &http.Client{
     Timeout: 2 * time.Second,
 }
-
-func waitForEtcd(endpoint string, maxWait time.Duration) {
-    url := endpoint + "/health"
-
-    retryInterval  :=  2 * time.Second
-    reportInterval := 10 * time.Second
-
-    start := time.Now()
-    nextReport := start
-
-    for {
-        resp, err := httpClient.Get(url)
-        if err == nil && resp.StatusCode == http.StatusOK {
-            resp.Body.Close()
-            logMsg("etcd is available")
-            return
-        }
-
-        if resp != nil {
-            resp.Body.Close()
-        }
-
-        now := time.Now()
-
-        if now.After(nextReport) {
-            logMsg("Waiting for etcd at %s (elapsed %d)", endpoint, int(now.Sub(start).Seconds()))
-            nextReport = now.Add(reportInterval)
-        }
-
-        if now.Sub(start) > maxWait {
-            logFatal("Etcd did not become available within %s", maxWait)
-        }
-
-        time.Sleep(retryInterval)
-    }
-}
-
 
 func b64(s string) string {
     return base64.StdEncoding.EncodeToString([]byte(s))

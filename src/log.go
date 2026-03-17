@@ -75,5 +75,10 @@ func logFatal(format string, args ...any) {
 
 func logListerner(info string, addr string) {
 
-    logMsg ("Listening  [%-10s]  on %s", info, addr)
+    if addr == "" {
+        // No listen address
+
+    } else {
+        logMsg ("Listening  [%-10s]  on %s", info, addr)
+    }
 }

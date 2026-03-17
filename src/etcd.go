@@ -28,7 +28,7 @@ type watchResponse struct {
 
         Events []watchEvent `json:"events"`
 
-        Created bool `json:"created"`
+        Created bool  `json:"created"`
         Canceled bool `json:"canceled"`
 
     } `json:"result"`
@@ -37,8 +37,11 @@ type watchResponse struct {
 type watchEvent struct {
     Type string `json:"type"`
     KV   struct {
-        Key   string `json:"key"`
-        Value string `json:"value"`
+        Key            string `json:"key"`
+        Value          string `json:"value"`
+        CreateRevision int64  `json:"create_revision,string"`
+        ModRevision    int64  `json:"mod_revision,string"`
+        Version        int64  `json:"version,string"`
     } `json:"kv"`
 }
 
@@ -197,11 +200,13 @@ func watchLoop() {
                 }
 
                 entry := BlockEntry{
-                    IP:         ip,
-                    Source:     rec.Source,
-                    ReturnCode: rec.Host,
-                    FirstSeen:  rec.FirstSeen,
-                    Expiration: rec.Expiration,
+                    IP:             ip,
+                    Source:         rec.Source,
+                    ReturnCode:     rec.Host,
+                    FirstSeen:      rec.FirstSeen,
+                    Expiration:     rec.Expiration,
+                    CreateRevision: ev.KV.CreateRevision,
+                    ModRevision:    ev.KV.ModRevision,
                 }
 
                 logMsg("Entry received: %v", entry)
@@ -254,6 +259,8 @@ func loadFromEtcd() {
 
     gEtcdRevision.Store(revision)
 
+    logMsg ("Loading Etcd revision: %d", revision)
+
     for _, kv := range kvs {
 
         key := b64d(kv.Key)
@@ -276,11 +283,13 @@ func loadFromEtcd() {
             parts[len(parts)-1])
 
         store.entries[ip] = &BlockEntry{
-            IP:         ip,
-            Source:     rec.Source,
-            ReturnCode: rec.Host,
-            FirstSeen:  rec.FirstSeen,
-            Expiration: rec.Expiration,
+            IP:             ip,
+            Source:         rec.Source,
+            ReturnCode:     rec.Host,
+            FirstSeen:      rec.FirstSeen,
+            Expiration:     rec.Expiration,
+            CreateRevision: parseInt64(kv.CreateRevision),
+            ModRevision:    parseInt64(kv.ModRevision),
         }
     }
 
@@ -366,7 +375,45 @@ func etcdRange(prefix string) ([]EtcdKV, int64, error) {
 
     json.Unmarshal(raw, &r)
 
-    rev, _ := strconv.ParseInt(r.Header.Revision, 10, 64)
+    revision, _ := strconv.ParseInt(r.Header.Revision, 10, 64)
 
-    return r.Kvs, rev, nil
+    return r.Kvs, revision, nil
 }
+
+
+func waitForEtcd(endpoint string, maxWait time.Duration) {
+    url := endpoint + "/health"
+
+    retryInterval  :=  2 * time.Second
+    reportInterval := 10 * time.Second
+
+    start := time.Now()
+    nextReport := start
+
+    for {
+        resp, err := httpClient.Get(url)
+        if err == nil && resp.StatusCode == http.StatusOK {
+            resp.Body.Close()
+            logMsg("etcd is available")
+            return
+        }
+
+        if resp != nil {
+            resp.Body.Close()
+        }
+
+        now := time.Now()
+
+        if now.After(nextReport) {
+            logMsg("Waiting for etcd at %s (elapsed %d)", endpoint, int(now.Sub(start).Seconds()))
+            nextReport = now.Add(reportInterval)
+        }
+
+        if now.Sub(start) > maxWait {
+            logFatal("Etcd did not become available within %s", maxWait)
+        }
+
+        time.Sleep(retryInterval)
+    }
+}
+

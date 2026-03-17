@@ -15,5 +15,5 @@ COPY --from=builder /tmp/open-blocklist /usr/local/bin/open-blocklist
 
 RUN setcap cap_net_bind_service=+ep /usr/local/bin/open-blocklist && mkdir -p /tls && chown nonroot /tls
 USER nonroot
-EXPOSE 8080 8090 8443 9100
+EXPOSE 5353 8080 8090 8443 9100
 ENTRYPOINT ["/usr/local/bin/open-blocklist"]
