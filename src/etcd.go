@@ -80,7 +80,7 @@ func watchLoop() {
     rangeEndBytes := prefixRangeEnd(prefix)
     rangeEnd := base64.StdEncoding.EncodeToString(rangeEndBytes)
 
-    logMsg("Watching for events for prefix: %s, key: %s", rblPrefix, key)
+    logMsg(LOG_VERBOSE, "Watching for events for prefix: %s, key: %s", rblPrefix, key)
 
     for {
         rev := gEtcdRevision.Load()
@@ -92,7 +92,7 @@ func watchLoop() {
 
         if rev > 0 {
             create["start_revision"] = rev + 1
-            logMsg("Starting watch from revision: %d", rev+1)
+            logMsg(LOG_VERBOSE, "Starting watch from revision: %d", rev+1)
         }
 
         req := map[string]interface{}{
@@ -108,7 +108,7 @@ func watchLoop() {
         )
 
         if err != nil {
-            logMsg("watch request creation failed: %v", err)
+            logMsg(LOG_ERROR, "Watch request creation failed: %v", err)
             time.Sleep(3 * time.Second)
             continue
         }
@@ -122,12 +122,12 @@ func watchLoop() {
         resp, err := client.Do(request)
 
         if err != nil {
-            logMsg("etcd watch connect failed: %v", err)
+            logMsg(LOG_ERROR, "Etcd watch connect failed: %v", err)
             time.Sleep(3 * time.Second)
             continue
         }
 
-        logMsg("Etcd watch connected")
+        logMsg(LOG_INFO, "Etcd watch connected")
 
         scanner := bufio.NewScanner(resp.Body)
 
@@ -141,7 +141,7 @@ func watchLoop() {
 
             err := json.Unmarshal(line, &msg)
             if err != nil {
-                logMsg("JSON Unmarshal failed: %v", err)
+                logMsg(LOG_ERROR, "JSON Unmarshal failed: %v", err)
                 continue
             }
 
@@ -156,7 +156,7 @@ func watchLoop() {
 
                     if newRev > old {
                         gEtcdRevision.Store(newRev)
-                        logMsg("Revision updated: %d -> %d", old, newRev)
+                        logMsg(LOG_INFO, "Revision updated: %d -> %d", old, newRev)
                     }
                 }
             }
@@ -167,13 +167,13 @@ func watchLoop() {
                 ip := ipFromKey(string(keyBytes))
 
                 if ip == "" {
-                    logMsg("No IP address found")
+                    logMsg(LOG_ERROR, "No IP address found")
                     continue
                 }
 
                 if ev.Type == "DELETE" {
 
-                    logMsg("Delete event received for: %v", ip)
+                    logMsg(LOG_INFO, "Delete event received for: %v", ip)
 
                     store.Lock()
                     delete(store.entries, ip)
@@ -182,7 +182,7 @@ func watchLoop() {
                     continue
                 }
 
-                logMsg("Update event received for: %v", ip)
+                logMsg(LOG_INFO, "Update event received for: %v", ip)
 
                 valueBytes, _ := base64.StdEncoding.DecodeString(ev.KV.Value)
 
@@ -190,12 +190,12 @@ func watchLoop() {
 
                 err := json.Unmarshal(valueBytes, &rec)
                 if err != nil {
-                    logMsg("JSON decode of value failed: %v", err)
+                    logMsg(LOG_ERROR, "JSON decode of value failed: %v", err)
                     continue
                 }
 
                 if net.ParseIP(ip) == nil {
-                    logMsg("Cannot parse IP address")
+                    logMsg(LOG_ERROR, "Cannot parse IP address")
                     continue
                 }
 
@@ -209,7 +209,7 @@ func watchLoop() {
                     ModRevision:    ev.KV.ModRevision,
                 }
 
-                logMsg("Entry received: %v", entry)
+                logMsg(LOG_INFO, "Entry received: %v", entry)
 
                 store.Lock()
                 store.entries[ip] = &entry
@@ -218,12 +218,12 @@ func watchLoop() {
         }
 
         if err := scanner.Err(); err != nil {
-            logMsg("watch scanner error: %v", err)
+            logMsg(LOG_ERROR, "Watch scanner error: %v", err)
         }
 
         resp.Body.Close()
 
-        logMsg("Watch connection closed, reconnecting")
+        logMsg(LOG_ERROR, "Watch connection closed, reconnecting")
         time.Sleep(2 * time.Second)
     }
 }
@@ -259,7 +259,7 @@ func loadFromEtcd() {
 
     gEtcdRevision.Store(revision)
 
-    logMsg ("Loading Etcd revision: %d", revision)
+    logMsg (LOG_INFO, "Loading Etcd revision: %d", revision)
 
     for _, kv := range kvs {
 
@@ -293,7 +293,7 @@ func loadFromEtcd() {
         }
     }
 
-    logMsg("Loaded entries from etcd: %d  (last revision: %d)", len(store.entries), revision)
+    logMsg(LOG_INFO, "Loaded entries from etcd: %d  (last revision: %d)", len(store.entries), revision)
 }
 
 
@@ -394,7 +394,7 @@ func waitForEtcd(endpoint string, maxWait time.Duration) {
         resp, err := httpClient.Get(url)
         if err == nil && resp.StatusCode == http.StatusOK {
             resp.Body.Close()
-            logMsg("etcd is available")
+            logMsg(LOG_INFO, "etcd is available")
             return
         }
 
@@ -405,7 +405,7 @@ func waitForEtcd(endpoint string, maxWait time.Duration) {
         now := time.Now()
 
         if now.After(nextReport) {
-            logMsg("Waiting for etcd at %s (elapsed %d)", endpoint, int(now.Sub(start).Seconds()))
+            logMsg(LOG_INFO, "Waiting for etcd at %s (elapsed %d)", endpoint, int(now.Sub(start).Seconds()))
             nextReport = now.Add(reportInterval)
         }
 

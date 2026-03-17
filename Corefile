@@ -20,13 +20,7 @@ open-blocklist-etcd.internal {
 
 
 in-addr.arpa {
-    etcd {
-        path /skydns
-        endpoint http://172.30.0.20:2379
-        fallthrough
-    }
-
-    forward . /etc/resolv.conf
+    forward . 172.30.0.10:5353
     cache 30
     log
     errors

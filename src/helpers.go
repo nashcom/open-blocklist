@@ -14,6 +14,7 @@ import (
     "runtime"
     "strconv"
     "strings"
+    "syscall"
     "time"
 )
 
@@ -25,8 +26,8 @@ func parseInt64(s string) int64 {
 func showRuntimeInfo() {
 
     logSpace()
-    logMsg("Runtime")
-    logMsg("-------------------------")
+    logMsg(LOG_INFO, "Runtime")
+    logMsg(LOG_INFO, "-------------------------")
     logSpace()
 
     info, err := readOSRelease()
@@ -42,6 +43,13 @@ func showRuntimeInfo() {
     showInfo("Platform", gBuildPlatform)
 
     showInfo("CPUs", runtime.NumCPU())
+
+    var sysInfo syscall.Sysinfo_t
+    syscall.Sysinfo(&sysInfo)
+    unit := float64(sysInfo.Unit)
+
+    showInfo("Total RAM", fmt.Sprintf("%.1f GB", float64(sysInfo.Totalram) * unit / 1024 / 1024 / 1024))
+    showInfo("Free RAM",  fmt.Sprintf("%.1f GB", float64(sysInfo.Freeram) * unit / 1024 / 1024 / 1024))
     showInfo("PID", os.Getpid())
 
     showInfo("UID/GID",   strconv.Itoa(os.Getuid())  + ":" + strconv.Itoa(os.Getgid()))
@@ -92,7 +100,7 @@ func getEnvLogLevel(key string, fallback LogLevel) LogLevel {
         if err == nil {
             return level
         } else {
-            logMsg("ERROR: Invalid log level [%s] for environment variable %s : %v", v, key, err)
+            logMsg(LOG_ERROR, "ERROR: Invalid log level [%s] for environment variable %s : %v", v, key, err)
         }
     }
 
@@ -105,7 +113,7 @@ func getEnvInt64(key string, fallback int64) int64 {
         if n, err := strconv.ParseInt(v, 10, 64); err == nil {
             return n
         } else {
-            logMsg("ERROR: Invalid numeric value [%s] for environment variable %s : %v", v, key, err)
+            logMsg(LOG_ERROR, "ERROR: Invalid numeric value [%s] for environment variable %s : %v", v, key, err)
         }
     }
 
@@ -118,7 +126,7 @@ func getEnvInt(key string, fallback int) int {
         if n, err := strconv.Atoi(v); err == nil {
             return n
         } else {
-            logMsg("ERROR: Invalid numeric value [%s] for environment variable %s : %v", v, key, err)
+            logMsg(LOG_ERROR, "ERROR: Invalid numeric value [%s] for environment variable %s : %v", v, key, err)
         }
     }
 
@@ -133,7 +141,7 @@ func getEnvBool(key string, fallback bool) bool {
 
     parsed, err := strconv.ParseBool(val)
     if err != nil {
-        logMsg("Warning: Invalid bool value [%s] for environment variable %s : %v", parsed, key, err)
+        logMsg(LOG_ERROR, "Warning: Invalid bool value [%s] for environment variable %s : %v", parsed, key, err)
         return fallback
     }
 

@@ -108,7 +108,7 @@ const (
     defaultApiListenAddr           = ":8090"
     defaultMetricsListenAddr       = ":9100"
     defaultDNSListenAddr           = ":5353"
-    defaultLogLevel                = LOG_ERROR
+    defaultLogLevel                = LOG_INFO
     defaultEtcEndpoint             = "http://etcd:2379"
 )
 
@@ -545,7 +545,7 @@ func expirationWorker() {
             delete(store.entries, ipstr)
             store.Unlock()
 
-            logMsg("Expired block removed: %s", ipstr)
+            logMsg(LOG_INFO, "Expired block removed: %s", ipstr)
         }
     }
 }
@@ -583,7 +583,7 @@ func startReadListener(addr string) {
     go func() {
         err := http.ListenAndServe(addr, mux)
         if err != nil {
-            logMsg("Lookup listener stopped: %v", err)
+            logMsg(LOG_INFO, "Lookup listener stopped: %v", err)
         }
     }()
 }
@@ -604,7 +604,7 @@ func startWriteListener(addr string) {
     go func() {
         err := http.ListenAndServe(addr, mux)
         if err != nil {
-            logMsg("API Listener stopped: %v", err)
+            logMsg(LOG_INFO, "API Listener stopped: %v", err)
         }
     }()
 }
@@ -625,11 +625,11 @@ func handleSignals() {
         switch sig {
 
         case syscall.SIGHUP:
-            logMsg("SIGHUP received - Reloading configuration")
+            logMsg(LOG_INFO, "SIGHUP received - Reloading configuration")
             /* LATER ... */
 
         case syscall.SIGINT, syscall.SIGTERM:
-            logMsg("Shutdown signal received: %v", sig)
+            logMsg(LOG_INFO, "Shutdown signal received: %v", sig)
             shutdown()
             os.Exit(0)
         }
@@ -667,7 +667,7 @@ func main() {
     flag.Parse()
 
     if *printVersion {
-        logMsg("%s", gVersionStr)
+        logMsg(LOG_INFO, "%s", gVersionStr)
         return
     }
 
@@ -679,16 +679,16 @@ func main() {
     }
 
     logSpace()
-    logMsg("Open-Blocklist V%s", gVersionStr)
-    logMsg("%s", dashLine(25))
+    logMsg(LOG_INFO, "Open-Blocklist V%s", gVersionStr)
+    logMsg(LOG_INFO, "%s", dashLine(25))
     logSpace()
 
-    logMsg("%s", copyright)
+    logMsg(LOG_INFO, "%s", copyright)
     logSpace()
     logSpace()
 
     showCfg("Description", "Variable", "Default", "Current")
-    logMsg("%s", dashLine(160))
+    logMsg(LOG_INFO, "%s", dashLine(160))
 
     logLevelValues := fmt.Sprintf("%s|%s|%s|%s|%s", LOG_NONE, LOG_ERROR, LOG_INFO, LOG_VERBOSE, LOG_DEBUG)
 
@@ -726,11 +726,11 @@ func main() {
     go expirationWorker()
 
     if gMultiInstanceMode {
-        logMsg("Running in multi-instance mode (watch enabled)")
+        logMsg(LOG_INFO, "Running in multi-instance mode (watch enabled)")
         startEtcWatcher()
 
     } else {
-        logMsg("Running in single-instance mode")
+        logMsg(LOG_INFO, "Running in single-instance mode")
     }
 
     select {}

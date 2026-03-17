@@ -11,11 +11,11 @@ import (
 )
 
 func showCfg(description, variableName, defaultValue, currentValue any) {
-    logMsg("%-34s  %-40s %-40v  %v", variableName, description, defaultValue, currentValue)
+    logMsg(LOG_INFO, "%-34s  %-40s %-40v  %v", variableName, description, defaultValue, currentValue)
 }
 
 func showInfo(description, currentValue any) {
-    logMsg("%-15s:  %v", description, currentValue)
+    logMsg(LOG_INFO, "%-15s:  %v", description, currentValue)
 }
 
 func (l LogLevel) LowerCaseStr() string {
@@ -63,7 +63,12 @@ func logSpace() {
     logLine("")
 }
 
-func logMsg(format string, args ...any) {
+func logMsg(level LogLevel, format string, args ...any) {
+
+    if level > gLogLevel {
+        return
+    }
+
     logLine(fmt.Sprintf(format, args ...))
 }
 
@@ -79,6 +84,6 @@ func logListerner(info string, addr string) {
         // No listen address
 
     } else {
-        logMsg ("Listening  [%-10s]  on %s", info, addr)
+        logMsg (LOG_INFO, "Listening  [%-10s]  on %s", info, addr)
     }
 }

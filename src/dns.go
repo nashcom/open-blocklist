@@ -1,3 +1,6 @@
+// open-blocklist - An open blocklist tool / dns routines
+// Copyright Nash!Com, Daniel Nashed 2026  - APACHE 2.0 see LICENSE
+
 package main
 
 import (
@@ -5,7 +8,6 @@ import (
     "strings"
     "github.com/miekg/dns"
 )
-
 
 func startDNSListener(addr string) {
 
@@ -58,23 +60,27 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         stats.ReqDnsInvalidQuery.Add(1)
         return
     }
+
     if len(r.Question) > 1 {
-        logMsg("DNS query: unexpected multiple questions (%d), using first", len(r.Question))
+        logMsg(LOG_ERROR, "[DNS Query]: Unexpected multiple questions (%d), using first", len(r.Question))
     }
 
     q := r.Question[0]
+    queryType := dns.TypeToString[q.Qtype]
+
+    logMsg(LOG_DEBUG, "[DNS Requery]: Type=%s Name=%s", queryType, q.Name)
 
     switch q.Qtype {
-    case dns.TypeA:
-        logMsg("DNS query: name=%s type=%s", q.Name, dns.TypeToString[q.Qtype])
+
+    case dns.TypeA, dns.TypeAAAA:
 
         if !dns.IsSubDomain(gRBLZone, q.Name) {
 
             msg.Rcode = dns.RcodeRefused
-            break  // fall through to w.WriteMsg
 
+            logMsg(LOG_VERBOSE, "[DNS Result/Refused]: Type=%s Name=%s", queryType, q.Name)
             stats.ReqDnsWrongZone.Add(1)
-            return
+            break  // fall through to w.WriteMsg
         }
 
         ip, ok := rblQueryToIP(q.Name)
@@ -82,6 +88,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
             // Malformed label count — not a valid RBL query
             msg.Rcode = dns.RcodeFormatError
 
+            logMsg(LOG_VERBOSE, "[DNS Result/Malformed]: Type=%s Name=%s", queryType, q.Name)
             stats.ReqDnsInvalidQuery.Add(1)
             break
         }
@@ -93,19 +100,61 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
             msg.Answer = append(msg.Answer, rr)
             msg.Rcode  = dns.RcodeSuccess
 
+            logMsg(LOG_VERBOSE, "[DNS Result/Found]: Type=%s Name=%s", queryType, q.Name)
             stats.ReqDnsBlocked.Add(1)
 
         } else {
             // Known zone, not listed -> NXDOMAIN (RBL semantics)
             msg.Rcode = dns.RcodeNameError
+
+            logMsg(LOG_VERBOSE, "[DNS Result/NotFound]: Type=%s Name=%s", queryType, q.Name)
+            stats.ReqDnsNotListed.Add(1)
+        }
+
+    case dns.TypePTR:
+
+        logMsg(LOG_VERBOSE, "[DNS Query/PTR]: name=%s type=%s", q.Name, queryType)
+
+        if !dns.IsSubDomain("in-addr.arpa.", q.Name) {
+            msg.Rcode = dns.RcodeRefused
+
+            logMsg(LOG_VERBOSE, "[DNS Result/NO-IN-ARPA]: Type=%s Name=%s", queryType, q.Name)
+            stats.ReqDnsWrongZone.Add(1)
+            break
+        }
+
+        ip, ok := ptrQueryToIP(q.Name)
+        if !ok {
+            msg.Rcode = dns.RcodeFormatError
+
+            logMsg(LOG_VERBOSE, "[DNS Result/Invalid Query]: name=%s type=%s", q.Name, queryType)
+            stats.ReqDnsInvalidQuery.Add(1)
+            break
+        }
+
+        // entry
+        _ , blocked := lookup(ip)
+
+        if blocked {
+            rr, _ := dns.NewRR(q.Name + " 10 IN PTR " + reverseHost + ".")
+            msg.Answer = append(msg.Answer, rr)
+            msg.Rcode = dns.RcodeSuccess
+
+            logMsg(LOG_VERBOSE, "[DNS Result/Blocked]: name=%s type=%s", q.Name, queryType)
+            stats.ReqDnsBlocked.Add(1)
+
+        } else {
+            // Not listed -> NXDOMAIN (RBL semantics)
+            msg.Rcode = dns.RcodeNameError
+
+            logMsg(LOG_VERBOSE, "[DNS Result/NotFound]: name=%s type=%s", q.Name, queryType)
             stats.ReqDnsNotListed.Add(1)
         }
 
     default:
-        logMsg("DNS query: name=%s type=%s (ignored)", q.Name, dns.TypeToString[q.Qtype])
-        // Not our query type — no reply
-
         msg.Rcode = dns.RcodeRefused
+
+        logMsg(LOG_VERBOSE, "[DNS Result/Unhandled]: name=%s type=%s", q.Name, queryType)
         stats.ReqDnsOtherQueryType.Add(1)
         break
     }
@@ -146,4 +195,18 @@ func rblQueryToIP(qname string) (string, bool) {
     default:
         return "", false
     }
+}
+
+// ptrQueryToIP extracts the IP from a reverse DNS query name.
+// e.g. 4.3.2.1.in-addr.arpa. -> 1.2.3.4
+func ptrQueryToIP(qname string) (string, bool) {
+    name := strings.TrimSuffix(qname, "in-addr.arpa.")
+    name = strings.TrimSuffix(name, ".")
+    labels := strings.Split(name, ".")
+    if len(labels) != 4 {
+        return "", false
+    }
+    // Reverse the labels
+    return fmt.Sprintf("%s.%s.%s.%s",
+        labels[3], labels[2], labels[1], labels[0]), true
 }

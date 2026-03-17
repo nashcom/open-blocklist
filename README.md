@@ -41,7 +41,8 @@ Open Blocklist consists of three containers.
 ## **[CoreDNS](https://coredns.io/)** Server
 
 CoreDNS provides the DNS interface for the blocklist.
-It implements the DNS blocklist functionality using its built-in **etcd integration**.
+It implements the DNS blocklist functionality using a forwarder configuration to a small DNS server provided only for RBL and IN-ARPA queries.
+An earlier version used built-in **etcd integration**.
 This allows DNS queries to be answered directly from the blocklist entries stored in etcd.
 
 
@@ -55,7 +56,7 @@ Blocklist entries are stored in etcd for:
 * synchronization between services
 * integration with CoreDNS
 
-CoreDNS reads DNS records directly from etcd using the SkyDNS-compatible layout.
+The entries are stored in SkyDNS-compatible layout in order to allow integration with Etcd.
 
 
 ## **[Go](https://go.dev/)** Based Application
@@ -63,45 +64,59 @@ CoreDNS reads DNS records directly from etcd using the SkyDNS-compatible layout.
 The Open Blocklist service is written in **Go**.
 The application provides the glue between the components and exposes REST API endpoints.
 It maintains an **in-memory copy of all blocklist entries** using a high-performance map to ensure extremely fast API lookups and updates.
-
+In addition it provides a small DNS server written in Go provide RBL and IN-ARPA replies directly from an in memory map.
 
 ### Data Flow
 
 1. At startup, all data is loaded from **etcd** into memory.
 2. API lookups are served directly from the in-memory map for maximum performance.
 3. Updates are applied in memory and persisted to **etcd**.
-4. CoreDNS reads updated data from etcd.
+4. CoreDNS uses a forwarder configuration to send requests directly to a DNS server, which is hosted by the open-blocklist container.
 5. A background process enforces expiration policies and removes expired entries from both memory and **etcd**.
 
 
 ```
-          +---------------------------+
-          |   Block Management API    |
-          |        (port 8090)        |
-          +------------+--------------+
-                       |
-                       v
-                   +-------+
-                   | etcd  |
-                   | store |
-                   +---+---+
-                       |
-                       v
-                 +-----------+
-                 |  CoreDNS  |
-                 |  DNSBL    |
-                 +-----+-----+
-                       |
-                       v
-                 DNS Clients
+                    +----------------------------------+
+                    |        In-Memory Store           |
+                    |    (shared fast lookup map)      |
+                    +---------+-----------+------------+
+                              |           |
+                              |           |
+        +---------------------+           +---------------------+
+        |                                               |
+        v                                               v
++---------------------------+               +---------------------------+
+|   Lookup / Auth API       |               |   Block Management API    |
+|        (port 8080)        |               |        (port 8090)        |
++-------------+-------------+               +-------------+-------------+
+              |                                           |
+              |                                           |
+              +-------------------+-----------------------+
+                                  |
+                                  v
+                             +----------+
+                             |  etcd    |
+                             | store    |
+                             +----------+
 
-          +---------------------------+
-          |   Lookup / Auth API       |
-          |        (port 8080)        |
-          +------------+--------------+
-                       |
-                       v
-                      etcd
+                                  ^
+                                  |
+                    (load on startup + persist updates)
+                                  |
+                     +-----------------------------+
+                     | Background Expiration Worker|
+                     +-----------------------------+
+                                  |
+                                  v
+                             (cleanup both)
+
+   +------------------+       forward        +----------------------+
+   |     CoreDNS      | -------------------> |   DNSBL Server       |
+   |  (DNS frontend)  |                      | (open-blocklist)     |
+   +--------+---------+                      +----------+-----------+
+            |                                           |
+            v                                           v
+       DNS Clients                              Uses In-Memory Store
 ```
 
 ---

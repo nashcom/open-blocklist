@@ -299,7 +299,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
     healthy := healthCheck()
 
     if gLogLevel >= LOG_DEBUG {
-        logMsg("Health Request [%s] : %v", gEndpointReady, healthy)
+        logMsg(LOG_DEBUG, "Health Request [%s] : %v", gEndpointReady, healthy)
     }
 
     if healthy {
@@ -318,7 +318,7 @@ func readyHandler(w http.ResponseWriter, r *http.Request) {
     ready := readyCheck()
 
     if gLogLevel >= LOG_DEBUG {
-        logMsg("Ready Request [%s] : %v", gEndpointReady, ready)
+        logMsg(LOG_DEBUG, "Ready Request [%s] : %v", gEndpointReady, ready)
     }
 
     if ready {
@@ -337,7 +337,7 @@ func liveHandler(w http.ResponseWriter, r *http.Request) {
     alive := aliveCheck();
 
     if gLogLevel >= LOG_DEBUG {
-        logMsg("Live Request [%s] : %v", gEndpointLive, alive)
+        logMsg(LOG_DEBUG, "Live Request [%s] : %v", gEndpointLive, alive)
     }
 
     if alive {
@@ -372,7 +372,7 @@ func startMetricsListener(addr string) {
 
         err := http.ListenAndServe(addr, mux)
         if err != nil {
-            logMsg("Metrics listener stopped: %v", err)
+            logMsg(LOG_INFO, "Metrics listener stopped: %v", err)
         }
     }()
 }

@@ -121,19 +121,25 @@ spec:
 
         - name: open-blocklist
           image: ghcr.io/nashcom/open-blocklist:latest
+
           ports:
             - containerPort: 8080
               name: lookup
+
             - containerPort: 8090
               name: write
+
             - containerPort: 9100
               name: metrics
+
             - containerPort: 5353
-              name: dns-udp
+              name: dns-udp-int
               protocol: UDP
+
             - containerPort: 5353
-              name: dns-tcp
+              name: dns-tcp-int
               protocol: TCP
+
           env:
             - name: OPENBL_ETCD_ENDPOINT
               value: http://127.0.0.1:2379
@@ -143,13 +149,16 @@ spec:
           args:
             - -conf
             - /Corefile
+
           ports:
             - containerPort: 53
               name: dns-udp
               protocol: UDP
+
             - containerPort: 53
               name: dns-tcp
               protocol: TCP
+
           volumeMounts:
             - name: config
               mountPath: /Corefile
