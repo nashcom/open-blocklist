@@ -31,7 +31,7 @@ services:
 
 
   open-blocklist:
-    image: ${OPEN_BLOCKLIST_IMAGE:-ghcr.io/nashcom/open-blocklist:latest}
+    image: ${OPENBL_IMAGE:-ghcr.io/nashcom/open-blocklist:latest}
     container_name: open-blocklist-main
     hostname: open-blocklist
 
@@ -43,8 +43,8 @@ services:
         ipv4_address: 172.30.0.10
 
     environment:
-      - OPENBL_ETCD_ENDPOINT=http://172.30.0.20:2379
-      - OPENBL_LOGLEVEL=DEBUG
+      OPENBL_ETCD_ENDPOINT: http://172.30.0.20:2379
+      OPENBL_LOGLEVEL: ${OPENBL_LOGLEVEL:-INFO}
 
     ports:
       - "${LOOKUP_HOST_PORT:-8080}:8080"

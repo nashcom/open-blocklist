@@ -6,9 +6,12 @@ package main
 import (
     "log"
     "fmt"
+    "net/http"
     "os"
     "time"
+    "github.com/miekg/dns"
 )
+
 
 func showCfg(description, variableName, defaultValue, currentValue any) {
     logMsg(LOG_INFO, "%-34s  %-40s %-40v  %v", variableName, description, defaultValue, currentValue)
@@ -42,16 +45,16 @@ func (l LogLevel) LowerCaseStr() string {
     }
 }
 
-func logLine(msg string) {
+func logLine(level LogLevel, msg string) {
 
     ts := time.Now().UTC().Format(time.RFC3339)
 
     if gLogJSON {
-        log.Printf(`{"ts":"%s","type":"%s","msg":%q}`, ts, "event", msg)
+        log.Printf(`{"ts":"%s","type":"event","level":"%s","msg":%q}`, ts, level.LowerCaseStr(), msg)
         return
     }
 
-    log.Println(ts + "   " + msg)
+    log.Println(ts + "   " + level.String() + ": " + msg)
 }
 
 func logSpace() {
@@ -60,7 +63,12 @@ func logSpace() {
         return
     }
 
-    logLine("")
+    if gLogLevel < LOG_INFO {
+        return
+    }
+
+    ts := time.Now().UTC().Format(time.RFC3339)
+    log.Println(ts)
 }
 
 func logMsg(level LogLevel, format string, args ...any) {
@@ -69,12 +77,12 @@ func logMsg(level LogLevel, format string, args ...any) {
         return
     }
 
-    logLine(fmt.Sprintf(format, args ...))
+    logLine(level, fmt.Sprintf(format, args ...))
 }
 
 func logFatal(format string, args ...any) {
 
-    logLine(fmt.Sprintf(format, args ...))
+    logLine(LOG_ERROR, fmt.Sprintf(format, args ...))
     os.Exit(1)
 }
 
@@ -86,4 +94,65 @@ func logListerner(info string, addr string) {
     } else {
         logMsg (LOG_INFO, "Listening  [%-10s]  on %s", info, addr)
     }
+}
+
+func logHttpReq(r *http.Request, start time.Time, requestName string, status string) {
+
+    duration := time.Since(start)
+    ts := time.Now().UTC().Format(time.RFC3339)
+
+    if gLogJSON {
+        log.Printf(`{"ts":"%s","type":"http","request":%q,"method":%q,"uri":%q,"duration_seconds":%f,"status":%q}`,
+            ts,
+            requestName,
+            r.Method,
+            r.RequestURI,
+            duration.Seconds(),
+            status,
+        )
+        return
+    }
+
+    if gLogLevel < LOG_DEBUG {
+        return
+    }
+
+    logMsg(LOG_DEBUG, "[HTTP-REQ: %s] %s %s %v (%.6f seconds) -> %s",
+        requestName,
+        r.Method,
+        r.RequestURI,
+        duration,
+        duration.Seconds(),
+        status,
+    )
+}
+
+func logDnsReq(r *dns.Msg, start time.Time, status string) {
+
+    duration := time.Since(start)
+    ts := time.Now().UTC().Format(time.RFC3339)
+    q  := r.Question[0]
+
+    if gLogJSON {
+        log.Printf(`{"ts":"%s","type":"dns","request":%q,"qtype":%s,"duration_seconds":%f,"status":%s}`,
+            ts,
+            q.Name,
+            dns.TypeToString[q.Qtype],
+            duration.Seconds(),
+            status,
+        )
+        return
+    }
+
+    if gLogLevel < LOG_DEBUG {
+        return
+    }
+
+    logMsg(LOG_DEBUG, "[DNS Requery: %s] %s %v (%.6f seconds) -> %s",
+        dns.TypeToString[q.Qtype],
+        q.Name,
+        duration,
+        duration.Seconds(),
+        status,
+    )
 }

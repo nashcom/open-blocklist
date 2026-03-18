@@ -3,7 +3,7 @@ open-blocklist.internal {
    forward . 172.30.0.10:5353
 
     cache 10
-    log
+    # log
     errors
 }
 
@@ -14,7 +14,7 @@ open-blocklist-etcd.internal {
     }
 
     cache 10
-    log
+    # log
     errors
 }
 
@@ -22,6 +22,6 @@ open-blocklist-etcd.internal {
 in-addr.arpa {
     forward . 172.30.0.10:5353
     cache 30
-    log
+    # log
     errors
 }

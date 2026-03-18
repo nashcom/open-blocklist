@@ -20,7 +20,7 @@ import (
     "time"
 )
 
-type LogLevel    int
+type LogLevel int
 
 const (
     LOG_NONE LogLevel = iota
@@ -80,18 +80,23 @@ func ParseLogLevel(s string) (LogLevel, error) {
 const (
 
     VersionMajor = 0
-    VersionMinor = 0
-    VersionPatch = 9
+    VersionMinor = 8
+    VersionPatch = 0
 
     VersionBuild int64 = VersionMajor*10000 + VersionMinor*100 + VersionPatch
 
-    copyright = "Copyright 2026 Nash!Com/Daniel Nashed. All rights reserved."
+    COPYRIGHT                      = "Copyright 2026 Nash!Com/Daniel Nashed. All rights reserved."
 
-    skyPrefix       = "/skydns"
-    rblZone         = "open-blocklist"
-    defaultSource   = "open-blocklist"
-    defaultReturn   = "127.0.0.2"
-    reverseHost     = "blocked.internal"
+    SKY_DNS_PREFIX                 = "/skydns"
+    OPEN_BLOCK_LIST                = "open-blocklist"
+    RBL_ZONE                       = "open-blocklist"
+
+    HTTP_HEADER_X_SERVICE          = "X-Service"
+    HTTP_HEADER_CONTENT_TYPE       = "Content-Type"
+    HTTP_METHOD_HEAD               = "HEAD"
+
+    HTTP_CONTENT_TYPE_TEXT_PLAIN   = "text/plain"
+    HTTP_CONTENT_TYPE_APPL_JSON    = "application/json"
 
     env_openbl_LookupListenAddr    = "OPENBL_LOOKUP_LISTEN_ADDR"
     env_openbl_ApiListenAddr       = "OPENBL_API_LISTEN_ADDR"
@@ -102,6 +107,8 @@ const (
     env_openbl_LogJSON             = "OPENBL_LOGJSON"
     env_openbl_MultiInstanceMode   = "OPENBL_MULTI_INSTANCE_MODE"
 
+    defaultSource                  = "openbl"
+    defaultReturn                  = "127.0.0.2"
     defaultLogJSON                 = false
     defaultMultiInstance           = true
     defaultLookupListenAddr        = ":8080"
@@ -130,7 +137,7 @@ var (
 
     gMultiInstanceMode = true
 
-    rblPrefix          = fmt.Sprintf("%s/internal/%s", skyPrefix, rblZone)
+    rblPrefix          = fmt.Sprintf("%s/internal/%s", SKY_DNS_PREFIX, RBL_ZONE)
     rblPrefixScan      = rblPrefix + "/"
     gExpCheckInterval  = 1 * time.Minute
 
@@ -144,6 +151,9 @@ var (
     gDNSListenAddr      string
     gMetricListnAddr    string
 
+    gReverseHost       = "blocked.internal"
+    gPtrTTL            = 120
+    gRecordTTL         = 120
     gRBLZone           = "open-blocklist.internal."
 
     gEndpointMetrics   = "/metrics"
@@ -278,22 +288,18 @@ func entryToMap(entry *BlockEntry) map[string]interface{} {
 
 func handleLookup(w http.ResponseWriter, r *http.Request) {
 
+    const ReqType = "Lookup"
+    start := time.Now()
+
     stats.RequestsLookup.Add(1)
 
     ip := r.PathValue("ip")
-
     entry, blocked := ipTableLookup(ip)
 
-    if !blocked {
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
 
-        w.Header().Set("X-Blocklist-Status", "clean")
-        w.WriteHeader(http.StatusNoContent)
-        return
-    }
+    if r.Method == HTTP_METHOD_HEAD {
 
-    if r.Method == "HEAD" {
-
-        w.Header().Set("X-Service",                      "open-blocklist")
         w.Header().Set("X-Blocklist-IP",                 entry.IP)
         w.Header().Set("X-Blocklist-CreateRevision",     fmt.Sprintf("%d", entry.CreateRevision))
         w.Header().Set("X-Blocklist-ModRevision",        fmt.Sprintf("%d", entry.ModRevision))
@@ -309,8 +315,18 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("X-Blocklist-Remaining-Seconds",  fmt.Sprintf("%d", remainingSeconds(entry.Expiration)))
         w.Header().Set("X-Blocklist-Remaining-Duration", remainingDuration(entry.Expiration))
 
-        w.Header().Set("X-Blocklist-Status", "blocked")
+        if blocked {
+            w.Header().Set("X-Blocklist-Status", "clean")
+        } else {
+            w.Header().Set("X-Blocklist-Status", "blocked")
+        }
+    }
 
+    if !blocked {
+
+        w.WriteHeader(http.StatusNoContent)
+
+        logHttpReq(r, start, ReqType, "NotBlocked")
         return
     }
 
@@ -318,7 +334,7 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 
     if format == "text" {
 
-        w.Header().Set("Content-Type", "text/plain")
+        w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_CONTENT_TYPE_TEXT_PLAIN)
 
         fmt.Fprintf(w,
             "blocked=true\nip=%s\ncreate_revision=%d\nmod_revision=%d\nsource=%s\nfirst_seen=%d\nfirst_seen_iso=%s\nexpiration=%d\nexpiration_iso=%s\nremaining_seconds=%d\nremaining_duration=%s\n",
@@ -333,22 +349,30 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
             remainingSeconds(entry.Expiration),
             remainingDuration(entry.Expiration))
 
+        logHttpReq(r, start, ReqType, "Blocked")
         return
     }
 
-    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_CONTENT_TYPE_APPL_JSON)
 
     resp := entryToMap(entry)
     resp["blocked"] = true
 
     json.NewEncoder(w).Encode(resp)
+
+    logHttpReq(r, start, ReqType, "Blocked")
 }
 
 func handleAuth(w http.ResponseWriter, r *http.Request) {
 
+    const ReqType = "Auth"
+
+    start := time.Now()
     stats.RequestsAuth.Add(1)
     stats.RequestsWriteActive.Add(1)
     defer stats.RequestsWriteActive.Add(-1)
+
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
 
     ip := r.PathValue("ip")
 
@@ -356,25 +380,32 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 
     if blocked {
         w.WriteHeader(http.StatusForbidden)
+        logHttpReq(r, start, ReqType, "Blocked")
         return
     }
 
+    logHttpReq(r, start, ReqType, "NotBlocked")
     w.WriteHeader(http.StatusNoContent)
 }
 
 func handlePut(w http.ResponseWriter, r *http.Request) {
 
+    const ReqType = "Put"
+
+    start := time.Now()
     stats.RequestsPut.Add(1)
     stats.RequestsWriteActive.Add(1)
     defer stats.RequestsWriteActive.Add(-1)
 
-    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
+    w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_CONTENT_TYPE_APPL_JSON)
 
     ipstr := r.PathValue("ip")
 
     ip := net.ParseIP(ipstr)
     if ip == nil {
         http.Error(w, "Invalid ip", http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
         return
     }
 
@@ -392,12 +423,14 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     for k := range q {
         if !allowedPutParams[k] {
             http.Error(w, "Invalid parameter: "+k, http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
             return
         }
     }
 
     if q.Get("duration") != "" && q.Get("expiration") != "" {
         http.Error(w, "Duration and expiration cannot be used together", http.StatusBadRequest)
+        logHttpReq(r, start, ReqType, "Error")
         return
     }
 
@@ -413,6 +446,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
         d, err := time.ParseDuration(v)
         if err != nil {
             http.Error(w, "Invalid duration", http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
             return
         }
 
@@ -423,6 +457,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
         t, err := time.Parse(time.RFC3339, v)
         if err != nil {
             http.Error(w, "Invalid expiration timestamp", http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
             return
         }
 
@@ -435,15 +470,15 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     rblRecord := DNSRecordPut{
         Version:    1,
         Host:       Uint32ToIPv4Str(entry.ReturnCode),
-        TTL:        300,
+        TTL:        gRecordTTL,
         Source:     entry.Source,
         FirstSeen:  entry.FirstSeen,
         Expiration: entry.Expiration,
     }
 
     ptrRecord := PTRRecord{
-        Host: reverseHost,
-        TTL:  300,
+        Host: gReverseHost,
+        TTL:  gPtrTTL,
     }
 
     etcdPut(rbl, rblRecord)
@@ -456,20 +491,27 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     }
 
     json.NewEncoder(w).Encode(entry)
+    logHttpReq(r, start, ReqType, "OK")
 }
 
 func handleDelete(w http.ResponseWriter, r *http.Request) {
 
+    const ReqType = "Delete"
+
+    start := time.Now()
     stats.RequestsDelete.Add(1)
     stats.RequestsWriteActive.Add(1)
     defer stats.RequestsWriteActive.Add(-1)
 
     ipstr := r.PathValue("ip")
 
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
+
     ip := net.ParseIP(ipstr)
 
     if ip == nil {
         http.Error(w, "Invalid ip", 400)
+        logHttpReq(r, start, ReqType, "Error")
         return
     }
 
@@ -486,18 +528,26 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
     }
 
     w.WriteHeader(http.StatusNoContent)
+
+    logHttpReq(r, start, ReqType, "NotFound")
 }
 
 func handleList(w http.ResponseWriter, r *http.Request) {
+
+    const ReqType = "List"
+
+    start := time.Now()
     stats.RequestsList.Add(1)
 
-    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
+    w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_CONTENT_TYPE_APPL_JSON)
 
     ipTable.RLock()
     defer ipTable.RUnlock()
 
     if len(ipTable.entries) == 0 {
         w.Write([]byte("{}"))
+        logHttpReq(r, start, ReqType, "Error")
         return
     }
 
@@ -508,12 +558,15 @@ func handleList(w http.ResponseWriter, r *http.Request) {
     }
 
     json.NewEncoder(w).Encode(result)
+
+    logMsg(LOG_DEBUG, "[List-Req] %s %s %dms", r.Method, r.RequestURI, time.Since(start).Milliseconds())
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 
     stats.RequestsHealth.Add(1)
 
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
     w.WriteHeader(http.StatusOK)
     w.Write([]byte("OK"))
 }
@@ -586,11 +639,22 @@ func RegisterWriteHandler(mux *http.ServeMux) {
 
 }
 
-func startReadListener(addr string) {
+func RegisterCatchAll(mux *http.ServeMux) {
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+
+        start := time.Now()
+
+        logHttpReq(r, start, "Invalid", "NotFound")
+        http.Error(w, "not found", http.StatusNotFound)
+    })
+}
+
+func startLookupListener(addr string) {
 
     mux := http.NewServeMux()
 
     RegisterReadHandler (mux)
+    RegisterCatchAll    (mux)
 
     logListerner("Lookup", addr)
 
@@ -606,7 +670,7 @@ func startReadListener(addr string) {
     }()
 }
 
-func startWriteListener(addr string) {
+func startApiListener(addr string) {
 
     logListerner("API", addr)
 
@@ -618,6 +682,7 @@ func startWriteListener(addr string) {
 
     RegisterReadHandler  (mux)
     RegisterWriteHandler (mux)
+    RegisterCatchAll     (mux)
 
     go func() {
         err := http.ListenAndServe(addr, mux)
@@ -656,12 +721,12 @@ func handleSignals() {
 
 func shutdown() {
 
-    logLine("Shutting down ...")
+    logMsg(LOG_INFO, "Shutting down ...")
     gShutdownRequested = true
 
     time.Sleep(time.Second)
 
-    logLine("Shutdown completed")
+    logMsg(LOG_INFO, "Shutdown completed")
 }
 
 func main() {
@@ -670,14 +735,14 @@ func main() {
     log.SetFlags(0)
 
     // Always read this first
+    gLogLevel          = getEnvLogLevel (env_openbl_LogLevel,          defaultLogLevel)
     gMultiInstanceMode = getEnvBool     (env_openbl_MultiInstanceMode, defaultMultiInstance)
-    gLogJSON           = getEnvBool     (env_openbl_LogJSON, defaultLogJSON)
-    gLogLevel          = getEnvLogLevel (env_openbl_LogLevel, defaultLogLevel)
-    gLookupListenAddr  = getEnv         (env_openbl_LogLevel,          defaultLookupListenAddr)
+    gLogJSON           = getEnvBool     (env_openbl_LogJSON,           defaultLogJSON)
+    gLookupListenAddr  = getEnv         (env_openbl_LogJSON,           defaultLookupListenAddr)
     gApiListenAddr     = getEnv         (env_openbl_ApiListenAddr,     defaultApiListenAddr)
     gDNSListenAddr     = getEnv         (env_openbl_DNSListenAddr,     defaultDNSListenAddr)
     gMetricListnAddr   = getEnv         (env_openbl_MetricsListenAddr, defaultMetricsListenAddr)
-    gEtcdEndpoint      = getEnv         (env_openbl_EtcEndpoint, defaultEtcEndpoint)
+    gEtcdEndpoint      = getEnv         (env_openbl_EtcEndpoint,       defaultEtcEndpoint)
 
     var printVersion  = flag.Bool("version",   false, "print version")
     var showGoVersion = flag.Bool("goversion", false, "show the go runtime version")
@@ -701,7 +766,7 @@ func main() {
     logMsg(LOG_INFO, "%s", dashLine(25))
     logSpace()
 
-    logMsg(LOG_INFO, "%s", copyright)
+    logMsg(LOG_INFO, "%s", COPYRIGHT)
     logSpace()
     logSpace()
 
@@ -731,9 +796,9 @@ func main() {
 
     logSpace()
 
-    startReadListener (gLookupListenAddr)
-    startWriteListener(gApiListenAddr)
-    startDNSListener  (gDNSListenAddr)
+    startLookupListener (gLookupListenAddr)
+    startApiListener    (gApiListenAddr)
+    startDNSListener    (gDNSListenAddr)
 
     if gMetricListnAddr != "" {
         startMetricsListener(gMetricListnAddr)

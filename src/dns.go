@@ -6,6 +6,7 @@ package main
 import (
     "fmt"
     "strings"
+    "time"
     "github.com/miekg/dns"
 )
 
@@ -53,6 +54,9 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
     msg.SetReply(r)
     msg.Authoritative = true
 
+    start  := time.Now()
+    status := ""
+
     if len(r.Question) == 0 {
         msg.Rcode = dns.RcodeFormatError
         _ = w.WriteMsg(msg)
@@ -66,9 +70,6 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
     }
 
     q := r.Question[0]
-    queryType := dns.TypeToString[q.Qtype]
-
-    logMsg(LOG_DEBUG, "[DNS Requery]: Type=%s Name=%s", queryType, q.Name)
 
     switch q.Qtype {
 
@@ -78,7 +79,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
             msg.Rcode = dns.RcodeRefused
 
-            logMsg(LOG_VERBOSE, "[DNS Result/Refused]: Type=%s Name=%s", queryType, q.Name)
+            status = "Refused"
             stats.ReqDnsWrongZone.Add(1)
             break  // fall through to w.WriteMsg
         }
@@ -88,7 +89,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
             // Malformed label count — not a valid RBL query
             msg.Rcode = dns.RcodeFormatError
 
-            logMsg(LOG_VERBOSE, "[DNS Result/Malformed]: Type=%s Name=%s", queryType, q.Name)
+            status = "Malformed"
             stats.ReqDnsInvalidQuery.Add(1)
             break
         }
@@ -100,25 +101,23 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
             msg.Answer = append(msg.Answer, rr)
             msg.Rcode  = dns.RcodeSuccess
 
-            logMsg(LOG_VERBOSE, "[DNS Result/Found]: Type=%s Name=%s", queryType, q.Name)
+            status = "Found"
             stats.ReqDnsBlocked.Add(1)
 
         } else {
             // Known zone, not listed -> NXDOMAIN (RBL semantics)
             msg.Rcode = dns.RcodeNameError
 
-            logMsg(LOG_VERBOSE, "[DNS Result/NotFound]: Type=%s Name=%s", queryType, q.Name)
+            status = "NotFound"
             stats.ReqDnsNotListed.Add(1)
         }
 
     case dns.TypePTR:
 
-        logMsg(LOG_VERBOSE, "[DNS Query/PTR]: name=%s type=%s", q.Name, queryType)
-
         if !dns.IsSubDomain("in-addr.arpa.", q.Name) {
             msg.Rcode = dns.RcodeRefused
 
-            logMsg(LOG_VERBOSE, "[DNS Result/NO-IN-ARPA]: Type=%s Name=%s", queryType, q.Name)
+            status = "WrongZone"
             stats.ReqDnsWrongZone.Add(1)
             break
         }
@@ -127,7 +126,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         if !ok {
             msg.Rcode = dns.RcodeFormatError
 
-            logMsg(LOG_VERBOSE, "[DNS Result/Invalid Query]: name=%s type=%s", q.Name, queryType)
+            status = "Invalid IP"
             stats.ReqDnsInvalidQuery.Add(1)
             break
         }
@@ -136,30 +135,31 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         _ , blocked := ipTableLookup(ip)
 
         if blocked {
-            rr, _ := dns.NewRR(q.Name + " 10 IN PTR " + reverseHost + ".")
+            rr, _ := dns.NewRR(q.Name + " 10 IN PTR " + gReverseHost + ".")
             msg.Answer = append(msg.Answer, rr)
             msg.Rcode = dns.RcodeSuccess
 
-            logMsg(LOG_VERBOSE, "[DNS Result/Blocked]: name=%s type=%s", q.Name, queryType)
+            status = "Blocked"
             stats.ReqDnsBlocked.Add(1)
 
         } else {
             // Not listed -> NXDOMAIN (RBL semantics)
             msg.Rcode = dns.RcodeNameError
 
-            logMsg(LOG_VERBOSE, "[DNS Result/NotFound]: name=%s type=%s", q.Name, queryType)
+            status = "NotFound"
             stats.ReqDnsNotListed.Add(1)
         }
 
     default:
         msg.Rcode = dns.RcodeRefused
-
-        logMsg(LOG_VERBOSE, "[DNS Result/Unhandled]: name=%s type=%s", q.Name, queryType)
+        status = "Unhandled"
         stats.ReqDnsOtherQueryType.Add(1)
         break
     }
 
     _ = w.WriteMsg(msg)
+
+    logDnsReq(r, start, status)
 }
 
 // rblQueryToIP extracts and reverses the IP address encoded in an RBL query name.

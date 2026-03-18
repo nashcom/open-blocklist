@@ -299,14 +299,14 @@ func reverseKey(ip net.IP) string {
         p := ipv4Parts(ip)
 
         return fmt.Sprintf("%s/arpa/in-addr/%s/%s/%s/%s",
-            skyPrefix,
+            SKY_DNS_PREFIX,
             p[0], p[1], p[2], p[3])
     }
 
     p := ipv6Nibbles(ip)
 
     return fmt.Sprintf("%s/arpa/ip6/%s",
-        skyPrefix,
+        SKY_DNS_PREFIX,
         strings.Join(p, "/"))
 }
 
