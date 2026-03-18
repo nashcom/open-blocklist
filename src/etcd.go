@@ -175,9 +175,9 @@ func watchLoop() {
 
                     logMsg(LOG_INFO, "Delete event received for: %v", ip)
 
-                    store.Lock()
-                    delete(store.entries, ip)
-                    store.Unlock()
+                    ipTable.Lock()
+                    delete(ipTable.entries, ip)
+                    ipTable.Unlock()
 
                     continue
                 }
@@ -202,7 +202,7 @@ func watchLoop() {
                 entry := BlockEntry{
                     IP:             ip,
                     Source:         rec.Source,
-                    ReturnCode:     rec.Host,
+                    ReturnCode:     FastIPv4StrToUint32(rec.Host),
                     FirstSeen:      rec.FirstSeen,
                     Expiration:     rec.Expiration,
                     CreateRevision: ev.KV.CreateRevision,
@@ -211,9 +211,9 @@ func watchLoop() {
 
                 logMsg(LOG_INFO, "Entry received: %v", entry)
 
-                store.Lock()
-                store.entries[ip] = &entry
-                store.Unlock()
+                ipTable.Lock()
+                ipTable.entries[ip] = &entry
+                ipTable.Unlock()
             }
         }
 
@@ -282,10 +282,10 @@ func loadFromEtcd() {
             parts[len(parts)-2],
             parts[len(parts)-1])
 
-        store.entries[ip] = &BlockEntry{
+        ipTable.entries[ip] = &BlockEntry{
             IP:             ip,
             Source:         rec.Source,
-            ReturnCode:     rec.Host,
+            ReturnCode:     FastIPv4StrToUint32(rec.Host),
             FirstSeen:      rec.FirstSeen,
             Expiration:     rec.Expiration,
             CreateRevision: parseInt64(kv.CreateRevision),
@@ -293,7 +293,7 @@ func loadFromEtcd() {
         }
     }
 
-    logMsg(LOG_INFO, "Loaded entries from etcd: %d  (last revision: %d)", len(store.entries), revision)
+    logMsg(LOG_INFO, "Loaded entries from etcd: %d (last revision: %d)", ipTableLen(), revision)
 }
 
 

@@ -310,15 +310,6 @@ func reverseKey(ip net.IP) string {
         strings.Join(p, "/"))
 }
 
-func lookup(ip string) (*BlockEntry, bool) {
-
-    store.RLock()
-    entry, ok := store.entries[ip]
-    store.RUnlock()
-
-    return entry, ok
-}
-
 func epochToISO(ts int64) string {
 
     if ts == 0 {
@@ -422,7 +413,7 @@ func IsIPv4(s string) bool {
     return strings.Count(s, ".") == 3
 }
 
-func FastIPv4ToUint32(s string) (uint32, error) {
+func FastIPv4StrToUint32(s string) (uint32) {
 
     var a, b, c, d int
     n, err := fmt.Sscanf(s, "%d.%d.%d.%d", &a, &b, &c, &d)
@@ -430,14 +421,56 @@ func FastIPv4ToUint32(s string) (uint32, error) {
     if err != nil || n != 4 ||
         a > 255 || b > 255 || c > 255 || d > 255 {
 
-        return 0, fmt.Errorf("invalid IPv4 address")
+        return 0
     }
 
     return uint32(a)<<24 |
         uint32(b)<<16 |
         uint32(c)<<8 |
-        uint32(d), nil
+        uint32(d)
 }
+
+
+func Uint32ToIPv4Str(n uint32) string {
+
+    var buf [15]byte // max "255.255.255.255"
+    pos := 0
+
+    pos += appendUint8(buf[pos:], byte(n>>24))
+    buf[pos] = '.'
+    pos++
+
+    pos += appendUint8(buf[pos:], byte(n>>16))
+    buf[pos] = '.'
+    pos++
+
+    pos += appendUint8(buf[pos:], byte(n>>8))
+    buf[pos] = '.'
+    pos++
+
+    pos += appendUint8(buf[pos:], byte(n))
+
+    return string(buf[:pos])
+}
+
+func appendUint8(dst []byte, v byte) int {
+
+    if v >= 100 {
+        dst[0] = '0' + v/100
+        dst[1] = '0' + (v/10)%10
+        dst[2] = '0' + v%10
+        return 3
+    }
+    if v >= 10 {
+        dst[0] = '0' + v/10
+        dst[1] = '0' + v%10
+        return 2
+    }
+
+    dst[0] = '0' + v
+    return 1
+}
+
 
 type IPv6Key [16]byte
 

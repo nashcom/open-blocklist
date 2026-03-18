@@ -93,10 +93,10 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
             break
         }
 
-        entry, blocked := lookup(ip)
+        entry, blocked := ipTableLookup(ip)
         if blocked {
 
-            rr, _ := dns.NewRR(q.Name + " 10 IN A " + entry.ReturnCode)
+            rr, _ := dns.NewRR(q.Name + " 10 IN A " + Uint32ToIPv4Str(entry.ReturnCode))
             msg.Answer = append(msg.Answer, rr)
             msg.Rcode  = dns.RcodeSuccess
 
@@ -133,7 +133,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         }
 
         // entry
-        _ , blocked := lookup(ip)
+        _ , blocked := ipTableLookup(ip)
 
         if blocked {
             rr, _ := dns.NewRR(q.Name + " 10 IN PTR " + reverseHost + ".")

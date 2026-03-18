@@ -100,6 +100,15 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
         gGoVersionBuild,
         nil)
 
+
+    writeMetric(
+        bw,
+        "open_blocklist_ip_entries",
+        "Number of IP table entries",
+        "gauge",
+        ipTableLen(),
+        nil)
+
     writeMetric(
         bw,
         "open-blocklist_requests_lookup_total",

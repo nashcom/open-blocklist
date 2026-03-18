@@ -189,16 +189,16 @@ type PTRRecord struct {
 }
 
 type BlockEntry struct {
-    IP             string
-    Source         string
-    ReturnCode     string
+    IP             string // LATER: have IPv4 and IPv6 table. have the IPv4 table use a uint32 and the IPv6 table a type with two uint64
+    Source         string // Should be short in which case string does not take a few bytes
     CreateRevision int64
     ModRevision    int64
     FirstSeen      int64
     Expiration     int64
+    ReturnCode     uint32
 }
 
-type Store struct {
+type ipTableStore struct {
     sync.RWMutex
     entries map[string]*BlockEntry
 }
@@ -233,8 +233,26 @@ type Stats struct
 
 var stats Stats
 
-var store = Store{
+var ipTable = ipTableStore{
     entries: make(map[string]*BlockEntry),
+}
+
+func ipTableLookup(ip string) (*BlockEntry, bool) {
+
+    ipTable.RLock()
+    entry, ok := ipTable.entries[ip]
+    ipTable.RUnlock()
+
+    return entry, ok
+}
+
+func ipTableLen() int64 {
+
+    ipTable.RLock()
+    entryCount := len(ipTable.entries)
+    ipTable.RUnlock()
+
+    return int64(entryCount)
 }
 
 func entryToMap(entry *BlockEntry) map[string]interface{} {
@@ -254,7 +272,7 @@ func entryToMap(entry *BlockEntry) map[string]interface{} {
         "remaining_seconds" : remainingSeconds(entry.Expiration),
         "remaining_duration": remainingDuration(entry.Expiration),
 
-        "return_code": entry.ReturnCode,
+        "return_code"       : Uint32ToIPv4Str(entry.ReturnCode),
     }
 }
 
@@ -264,7 +282,7 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 
     ip := r.PathValue("ip")
 
-    entry, blocked := lookup(ip)
+    entry, blocked := ipTableLookup(ip)
 
     if !blocked {
 
@@ -280,7 +298,7 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("X-Blocklist-CreateRevision",     fmt.Sprintf("%d", entry.CreateRevision))
         w.Header().Set("X-Blocklist-ModRevision",        fmt.Sprintf("%d", entry.ModRevision))
         w.Header().Set("X-Blocklist-Source",             entry.Source)
-        w.Header().Set("X-Blocklist-Return",             entry.ReturnCode)
+        w.Header().Set("X-Blocklist-Return",             Uint32ToIPv4Str(entry.ReturnCode))
 
         w.Header().Set("X-Blocklist-First-Seen",         fmt.Sprintf("%d", entry.FirstSeen))
         w.Header().Set("X-Blocklist-First-Seen-ISO",     epochToISO(entry.FirstSeen))
@@ -334,7 +352,7 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 
     ip := r.PathValue("ip")
 
-    _, blocked := lookup(ip)
+    _, blocked := ipTableLookup(ip)
 
     if blocked {
         w.WriteHeader(http.StatusForbidden)
@@ -365,7 +383,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     entry := BlockEntry{
         IP:         ipstr,
         Source:     defaultSource,
-        ReturnCode: defaultReturn,
+        ReturnCode: FastIPv4StrToUint32(defaultReturn),
         FirstSeen:  now,
     }
 
@@ -388,7 +406,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     }
 
     if v := q.Get("return_code"); v != "" {
-        entry.ReturnCode = v
+        entry.ReturnCode = FastIPv4StrToUint32(v)
     }
 
     if v := q.Get("duration"); v != "" {
@@ -416,7 +434,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
 
     rblRecord := DNSRecordPut{
         Version:    1,
-        Host:       entry.ReturnCode,
+        Host:       Uint32ToIPv4Str(entry.ReturnCode),
         TTL:        300,
         Source:     entry.Source,
         FirstSeen:  entry.FirstSeen,
@@ -432,9 +450,9 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     etcdPut(ptr, ptrRecord)
 
     if gMultiInstanceMode == false {
-        store.Lock()
-        store.entries[ipstr] = &entry
-        store.Unlock()
+        ipTable.Lock()
+        ipTable.entries[ipstr] = &entry
+        ipTable.Unlock()
     }
 
     json.NewEncoder(w).Encode(entry)
@@ -462,9 +480,9 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
     etcdDelete(ptr)
 
     if gMultiInstanceMode == false {
-        store.Lock()
-        delete(store.entries, ipstr)
-        store.Unlock()
+        ipTable.Lock()
+        delete(ipTable.entries, ipstr)
+        ipTable.Unlock()
     }
 
     w.WriteHeader(http.StatusNoContent)
@@ -475,17 +493,17 @@ func handleList(w http.ResponseWriter, r *http.Request) {
 
     w.Header().Set("Content-Type", "application/json")
 
-    store.RLock()
-    defer store.RUnlock()
+    ipTable.RLock()
+    defer ipTable.RUnlock()
 
-    if len(store.entries) == 0 {
+    if len(ipTable.entries) == 0 {
         w.Write([]byte("{}"))
         return
     }
 
-    result := make([]map[string]interface{}, 0, len(store.entries))
+    result := make([]map[string]interface{}, 0, len(ipTable.entries))
 
-    for _, entry := range store.entries {
+    for _, entry := range ipTable.entries {
         result = append(result, entryToMap(entry))
     }
 
@@ -513,16 +531,16 @@ func expirationWorker() {
 
         var expired []string
 
-        store.RLock()
+        ipTable.RLock()
 
-        for ip, entry := range store.entries {
+        for ip, entry := range ipTable.entries {
 
             if entry.Expiration > 0 && entry.Expiration <= now {
                 expired = append(expired, ip)
             }
         }
 
-        store.RUnlock()
+        ipTable.RUnlock()
 
         if len(expired) == 0 {
             continue
@@ -541,9 +559,9 @@ func expirationWorker() {
             etcdDelete(rbl)
             etcdDelete(ptr)
 
-            store.Lock()
-            delete(store.entries, ipstr)
-            store.Unlock()
+            ipTable.Lock()
+            delete(ipTable.entries, ipstr)
+            ipTable.Unlock()
 
             logMsg(LOG_INFO, "Expired block removed: %s", ipstr)
         }
