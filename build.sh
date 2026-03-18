@@ -107,6 +107,10 @@ for a in "$@"; do
       IMAGE_DESCRIPTION="Chainguard Wolfi"
       ;;
 
+    -pprof)
+      GO_BUILD_TAGS=pprof
+      ;;
+
     -h|/h|-\?|/\?|-help|--help|help|usage)
       usage
       exit 0

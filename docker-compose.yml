@@ -45,6 +45,7 @@ services:
     environment:
       OPENBL_ETCD_ENDPOINT: http://172.30.0.20:2379
       OPENBL_LOGLEVEL: ${OPENBL_LOGLEVEL:-INFO}
+      OPENBL_LOG_FILENAME: ${OPENBL_LOG_FILENAME}
 
     ports:
       - "${LOOKUP_HOST_PORT:-8080}:8080"
@@ -52,7 +53,7 @@ services:
       - "${METRICS_HOST_PORT:-9100}:9100"
       - "${DNS_HOST_PORT:-5353}:5353/udp"
       - "${DNS_HOST_PORT:-5353}:5353/tcp"
-
+      - "${PPROF_HOST_PORT:-6060}:6060/tcp"
 
   coredns:
     image: ${COREDNS_IMAGE:-coredns/coredns:latest}
