@@ -87,7 +87,7 @@ func lookupIP(lookupBase, ip string) (LookupResponse, int, error) {
     }
     defer resp.Body.Close()
 
-    if resp.StatusCode == http.StatusNoContent {
+    if resp.StatusCode != http.StatusOK {
         return LookupResponse{Blocked: false}, resp.StatusCode, nil
     }
 

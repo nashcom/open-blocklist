@@ -1,5 +1,7 @@
 .env
 bin/*
 *.exe
-testing/perftest/perftest
-testing/functest/functest
+testing/bin/*
+!testing/bin/README.md
+testing/perftest/bin/
+testing/functest/bin/

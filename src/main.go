@@ -298,7 +298,7 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 
     ip := r.PathValue("ip")
 
-    if ip == "" {
+    if ip == "" || !IsValidIP(ip) {
         w.Header().Set("X-Blocklist-Status", "error")
         w.WriteHeader(http.StatusBadRequest)
         logHttpReq(r, start, ReqType, "Error")
@@ -390,6 +390,12 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 
     ip := r.PathValue("ip")
 
+    if ip == "" || !IsValidIP(ip) {
+        w.WriteHeader(http.StatusBadRequest)
+        logHttpReq(r, start, ReqType, "Error")
+        return
+    }
+
     _, blocked := ipTableLookup(ip)
 
     if blocked {
@@ -399,7 +405,7 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
     }
 
     logHttpReq(r, start, ReqType, "NotBlocked")
-    w.WriteHeader(http.StatusNoContent)
+    w.WriteHeader(http.StatusOK)
 }
 
 func handlePut(w http.ResponseWriter, r *http.Request) {
