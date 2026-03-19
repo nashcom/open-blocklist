@@ -259,7 +259,35 @@ func ipTableLookup(ip string) (*BlockEntry, bool) {
     entry, ok := ipTable.entries[ip]
     ipTable.RUnlock()
 
-    return entry, ok
+    if !ok || entry == nil {
+        return nil, false
+    }
+
+    if entry.Expiration > 0 && entry.Expiration <= time.Now().Unix() {
+        go deleteExpiredIP(ip)
+        return nil, false
+    }
+
+    return entry, true
+}
+
+func deleteExpiredIP(ipstr string) {
+
+    parsed := net.ParseIP(ipstr)
+    if parsed == nil {
+        return
+    }
+
+    etcdDelete(rblKey(parsed))
+    etcdDelete(reverseKey(parsed))
+
+    if !gMultiInstanceMode {
+        ipTable.Lock()
+        delete(ipTable.entries, ipstr)
+        ipTable.Unlock()
+    }
+
+    logMsg(LOG_INFO, "Lazy expiry: IP %s", ipstr)
 }
 
 func ipTableLen() int64 {
@@ -315,6 +343,18 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 
     entry, blocked := ipTableLookup(ip)
 
+    var matchedCIDR string
+    if !blocked {
+        if parsed := net.ParseIP(ip); parsed != nil {
+            if cidrEntry := cidrTable.lookup(parsed); cidrEntry != nil {
+                entry = cidrEntryToBlockEntry(cidrEntry)
+                entry.IP = ip
+                matchedCIDR = cidrEntry.CIDR
+                blocked = true
+            }
+        }
+    }
+
     w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
 
     if r.Method == HTTP_METHOD_HEAD {
@@ -338,6 +378,10 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
             w.Header().Set("X-Blocklist-Expiration-ISO",     epochToISO(entry.Expiration))
             w.Header().Set("X-Blocklist-Remaining-Seconds",  fmt.Sprintf("%d", remainingSeconds(entry.Expiration)))
             w.Header().Set("X-Blocklist-Remaining-Duration", remainingDuration(entry.Expiration))
+
+            if matchedCIDR != "" {
+                w.Header().Set("X-Blocklist-Matched-CIDR", matchedCIDR)
+            }
 
             w.Header().Set("X-Blocklist-Status", "blocked")
 
@@ -379,6 +423,9 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 
     resp := entryToMap(entry)
     resp["blocked"] = true
+    if matchedCIDR != "" {
+        resp["matched_cidr"] = matchedCIDR
+    }
 
     json.NewEncoder(w).Encode(resp)
 
@@ -405,6 +452,12 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
     }
 
     _, blocked := ipTableLookup(ip)
+
+    if !blocked {
+        if parsed := net.ParseIP(ip); parsed != nil {
+            blocked = cidrTable.lookup(parsed) != nil
+        }
+    }
 
     if blocked {
         w.WriteHeader(http.StatusForbidden)
@@ -588,6 +641,155 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
     logHttpReq(r, start, ReqType, "OK")
 }
 
+func handlePutNetwork(w http.ResponseWriter, r *http.Request) {
+
+    const ReqType = "PutNetwork"
+
+    start := time.Now()
+    stats.RequestsPut.Add(1)
+    stats.RequestsWriteActive.Add(1)
+    defer stats.RequestsWriteActive.Add(-1)
+
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
+    w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_CONTENT_TYPE_APPL_JSON)
+
+    // Reconstruct CIDR from the two path segments: {net}/{prefix}
+    cidrStr := r.PathValue("net") + "/" + r.PathValue("prefix")
+
+    _, network, err := net.ParseCIDR(cidrStr)
+    if err != nil {
+        http.Error(w, "Invalid network: "+cidrStr, http.StatusBadRequest)
+        logHttpReq(r, start, ReqType, "Error")
+        return
+    }
+    cidr := network.String() // canonical form, e.g. "1.2.3.0/24"
+
+    now := time.Now().Unix()
+
+    entry := CIDREntry{
+        CIDR:       cidr,
+        Net:        network,
+        Source:     defaultSource,
+        Action:     "ban",
+        ReturnCode: IPv4StrToUint32(defaultReturn),
+        FirstSeen:  now,
+        LastSeen:   now,
+    }
+
+    // Preserve first_seen if the network is already blocked.
+    if existing := cidrTable.findByCIDR(cidr); existing != nil {
+        entry.FirstSeen = existing.FirstSeen
+    }
+
+    q := r.URL.Query()
+
+    for k := range q {
+        if !allowedPutParams[k] {
+            http.Error(w, "Invalid parameter: "+k, http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
+            return
+        }
+    }
+
+    if q.Get("duration") != "" && q.Get("expiration") != "" {
+        http.Error(w, "Duration and expiration cannot be used together", http.StatusBadRequest)
+        logHttpReq(r, start, ReqType, "Error")
+        return
+    }
+
+    if v := q.Get("source"); v != "" {
+        entry.Source = v
+    }
+    if v := q.Get("scenario"); v != "" {
+        entry.Scenario = v
+    }
+    if v := q.Get("action"); v != "" {
+        entry.Action = v
+    }
+    if v := q.Get("return_code"); v != "" {
+        entry.ReturnCode = IPv4StrToUint32(v)
+    }
+    if v := q.Get("last_seen"); v != "" {
+        t, err := time.Parse(time.RFC3339, v)
+        if err != nil {
+            http.Error(w, "Invalid last_seen timestamp", http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
+            return
+        }
+        entry.LastSeen = t.Unix()
+    }
+    if v := q.Get("duration"); v != "" {
+        d, err := time.ParseDuration(v)
+        if err != nil {
+            http.Error(w, "Invalid duration", http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
+            return
+        }
+        entry.Expiration = now + int64(d/time.Second)
+    }
+    if v := q.Get("expiration"); v != "" {
+        t, err := time.Parse(time.RFC3339, v)
+        if err != nil {
+            http.Error(w, "Invalid expiration timestamp", http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
+            return
+        }
+        entry.Expiration = t.Unix()
+    }
+
+    rec := BlockRecord{
+        Version:    1,
+        Host:       Uint32ToIPv4Str(entry.ReturnCode),
+        TTL:        gRecordTTL,
+        Source:     entry.Source,
+        Scenario:   entry.Scenario,
+        Action:     entry.Action,
+        FirstSeen:  entry.FirstSeen,
+        LastSeen:   entry.LastSeen,
+        Expiration: entry.Expiration,
+    }
+
+    etcdPutCIDR(cidr, rec)
+
+    if !gMultiInstanceMode {
+        cidrTable.upsert(&entry)
+    }
+
+    json.NewEncoder(w).Encode(cidrEntryToMap(&entry))
+    logHttpReq(r, start, ReqType, "OK")
+}
+
+func handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
+
+    const ReqType = "DeleteNetwork"
+
+    start := time.Now()
+    stats.RequestsDelete.Add(1)
+    stats.RequestsWriteActive.Add(1)
+    defer stats.RequestsWriteActive.Add(-1)
+
+    w.Header().Set(HTTP_HEADER_X_SERVICE, OPEN_BLOCK_LIST)
+
+    cidrStr := r.PathValue("net") + "/" + r.PathValue("prefix")
+
+    _, network, err := net.ParseCIDR(cidrStr)
+    if err != nil {
+        http.Error(w, "Invalid network: "+cidrStr, http.StatusBadRequest)
+        logHttpReq(r, start, ReqType, "Error")
+        return
+    }
+    cidr := network.String()
+
+    etcdDeleteCIDR(cidr)
+
+    if !gMultiInstanceMode {
+        cidrTable.remove(cidr)
+    }
+
+    w.WriteHeader(http.StatusNoContent)
+    logHttpReq(r, start, ReqType, "OK")
+}
+
 func handleList(w http.ResponseWriter, r *http.Request) {
 
     const ReqType = "List"
@@ -650,10 +852,6 @@ func expirationWorker() {
 
         ipTable.RUnlock()
 
-        if len(expired) == 0 {
-            continue
-        }
-
         for _, ipstr := range expired {
 
             ip := net.ParseIP(ipstr)
@@ -673,6 +871,22 @@ func expirationWorker() {
 
             logMsg(LOG_INFO, "Expired block removed: %s", ipstr)
         }
+
+        var expiredCIDRs []string
+
+        cidrTable.RLock()
+        for _, e := range cidrTable.entries {
+            if e.Expiration > 0 && e.Expiration <= now {
+                expiredCIDRs = append(expiredCIDRs, e.CIDR)
+            }
+        }
+        cidrTable.RUnlock()
+
+        for _, cidr := range expiredCIDRs {
+            etcdDeleteCIDR(cidr)
+            cidrTable.remove(cidr)
+            logMsg(LOG_INFO, "Expired CIDR block removed: %s", cidr)
+        }
     }
 }
 
@@ -689,8 +903,10 @@ func RegisterReadHandler(mux *http.ServeMux) {
 
 func RegisterWriteHandler(mux *http.ServeMux) {
 
-    mux.HandleFunc("PUT /block/{ip}",    handlePut)
-    mux.HandleFunc("DELETE /block/{ip}", handleDelete)
+    mux.HandleFunc("PUT /block/{ip}",                      handlePut)
+    mux.HandleFunc("DELETE /block/{ip}",                   handleDelete)
+    mux.HandleFunc("PUT /block-network/{net}/{prefix}",    handlePutNetwork)
+    mux.HandleFunc("DELETE /block-network/{net}/{prefix}", handleDeleteNetwork)
 
 }
 
@@ -793,6 +1009,7 @@ func main() {
     gLogLevel           = getEnvLogLevel(env_openbl_LogLevel, defaultLogLevel)
     gMultiInstanceMode  = getEnvBool(env_openbl_MultiInstanceMode, defaultMultiInstance)
     gLogJSON            = getEnvBool(env_openbl_LogJSON, defaultLogJSON)
+    initCrowdSec()
     gLogFilePath        = getEnv(env_openbl_LogFileName, "")
     gLookupListenAddr   = getEnv(env_openbl_LookupListenAddr, defaultLookupListenAddr)
     gApiListenAddr      = getEnv(env_openbl_ApiListenAddr, defaultApiListenAddr)
@@ -852,6 +1069,9 @@ func main() {
     showCfg(logLevelValues,          env_openbl_LogLevel, defaultLogLevel, gLogLevel)
     showCfg("Log File name",         env_openbl_LogFileName, "<STDOUT>", gLogFilePath)
     showCfg("Log output in JSON",    env_openbl_LogJSON, defaultLogJSON, gLogJSON)
+    showCfg("CrowdSec enabled",      env_openbl_CrowdSecEnabled, false, gCrowdSecEnabled)
+    showCfg("CrowdSec LAPI URL",     env_openbl_CrowdSecLAPIURL, defaultCrowdSecLAPIURL, gCrowdSecLAPIURL)
+    showCfg("CrowdSec poll interval",env_openbl_CrowdSecPollInterval, "30s", gCrowdSecPollInterval)
 
     showRuntimeInfo()
     logSpace()
@@ -862,6 +1082,7 @@ func main() {
 
     // Load existing data
     loadFromEtcd()
+    loadCIDRFromEtcd()
 
     logSpace()
 
@@ -880,10 +1101,12 @@ func main() {
     if gMultiInstanceMode {
         logMsg(LOG_INFO, "Running in multi-instance mode (watch enabled)")
         startEtcWatcher()
-
+        startCIDRWatcher()
     } else {
         logMsg(LOG_INFO, "Running in single-instance mode")
     }
+
+    startCrowdSecBouncer()
 
     select {}
 }

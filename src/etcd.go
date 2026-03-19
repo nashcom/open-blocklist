@@ -387,6 +387,194 @@ func etcdRange(prefix string) ([]EtcdKV, int64, error) {
 }
 
 
+// cidrToEtcdKey encodes a CIDR for storage as an etcd key.
+// The "/" separating prefix and mask length is replaced with "_" to avoid
+// conflict with the etcd path separator.
+// Example: "1.2.3.0/24" → "/skydns/internal/open-blocklist-cidr/1.2.3.0_24"
+func cidrToEtcdKey(cidr string) string {
+	return cidrPrefix + "/" + strings.ReplaceAll(cidr, "/", "_")
+}
+
+// cidrFromEtcdKey extracts the CIDR string from an etcd key, or returns "".
+func cidrFromEtcdKey(key string) string {
+	prefix := cidrPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return ""
+	}
+	return strings.ReplaceAll(key[len(prefix):], "_", "/")
+}
+
+func etcdPutCIDR(cidr string, rec BlockRecord) error {
+	return etcdPut(cidrToEtcdKey(cidr), rec)
+}
+
+func etcdDeleteCIDR(cidr string) {
+	etcdDelete(cidrToEtcdKey(cidr))
+}
+
+func loadCIDRFromEtcd() {
+
+	kvs, _, err := etcdRange(cidrPrefixScan)
+	if err != nil {
+		logMsg(LOG_ERROR, "CIDR load from etcd failed: %v", err)
+		return
+	}
+
+	for _, kv := range kvs {
+		key := b64d(kv.Key)
+		val := b64d(kv.Value)
+
+		cidr := cidrFromEtcdKey(key)
+		if cidr == "" {
+			continue
+		}
+
+		var rec BlockRecord
+		if err := json.Unmarshal([]byte(val), &rec); err != nil {
+			logMsg(LOG_ERROR, "CIDR etcd decode failed for %s: %v", cidr, err)
+			continue
+		}
+
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			logMsg(LOG_ERROR, "Invalid CIDR in etcd %s: %v", cidr, err)
+			continue
+		}
+
+		cidrTable.upsert(&CIDREntry{
+			CIDR:       cidr,
+			Net:        network,
+			Source:     rec.Source,
+			Scenario:   rec.Scenario,
+			Action:     rec.Action,
+			ReturnCode: IPv4StrToUint32(rec.Host),
+			FirstSeen:  rec.FirstSeen,
+			LastSeen:   rec.LastSeen,
+			Expiration: rec.Expiration,
+		})
+	}
+
+	logMsg(LOG_INFO, "Loaded CIDR entries from etcd: %d", cidrTable.len())
+}
+
+func startCIDRWatcher() {
+	go cidrWatchLoop()
+}
+
+func cidrWatchLoop() {
+
+	prefix := []byte(cidrPrefix)
+	key := base64.StdEncoding.EncodeToString(prefix)
+
+	rangeEndBytes := prefixRangeEnd(prefix)
+	rangeEnd := base64.StdEncoding.EncodeToString(rangeEndBytes)
+
+	logMsg(LOG_VERBOSE, "Watching CIDR events for prefix: %s", cidrPrefix)
+
+	for {
+		rev := gEtcdRevision.Load()
+
+		create := map[string]interface{}{
+			"key":       key,
+			"range_end": rangeEnd,
+		}
+
+		if rev > 0 {
+			create["start_revision"] = rev + 1
+		}
+
+		req := map[string]interface{}{"create_request": create}
+		body, _ := json.Marshal(req)
+
+		request, err := http.NewRequest("POST", gEtcdEndpoint+"/v3/watch", bytes.NewReader(body))
+		if err != nil {
+			logMsg(LOG_ERROR, "CIDR watch request failed: %v", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		request.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 0}
+		resp, err := client.Do(request)
+		if err != nil {
+			logMsg(LOG_ERROR, "CIDR watch connect failed: %v", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		logMsg(LOG_INFO, "CIDR watch connected")
+
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			var msg watchResponse
+			if err := json.Unmarshal(line, &msg); err != nil {
+				logMsg(LOG_ERROR, "CIDR watch JSON decode failed: %v", err)
+				continue
+			}
+
+			if msg.Result.Header.Revision != "" {
+				if newRev, err := strconv.ParseInt(msg.Result.Header.Revision, 10, 64); err == nil {
+					updateRevision(newRev)
+				}
+			}
+
+			for _, ev := range msg.Result.Events {
+				keyBytes, _ := base64.StdEncoding.DecodeString(ev.KV.Key)
+				cidr := cidrFromEtcdKey(string(keyBytes))
+				if cidr == "" {
+					logMsg(LOG_ERROR, "CIDR watch: cannot extract CIDR from key %s", string(keyBytes))
+					continue
+				}
+
+				if ev.Type == "DELETE" {
+					cidrTable.remove(cidr)
+					logMsg(LOG_INFO, "CIDR delete event: %s", cidr)
+					continue
+				}
+
+				valueBytes, _ := base64.StdEncoding.DecodeString(ev.KV.Value)
+				var rec BlockRecord
+				if err := json.Unmarshal(valueBytes, &rec); err != nil {
+					logMsg(LOG_ERROR, "CIDR watch: JSON decode failed: %v", err)
+					continue
+				}
+
+				_, network, err := net.ParseCIDR(cidr)
+				if err != nil {
+					logMsg(LOG_ERROR, "CIDR watch: invalid CIDR %s: %v", cidr, err)
+					continue
+				}
+
+				cidrTable.upsert(&CIDREntry{
+					CIDR:       cidr,
+					Net:        network,
+					Source:     rec.Source,
+					Scenario:   rec.Scenario,
+					Action:     rec.Action,
+					ReturnCode: IPv4StrToUint32(rec.Host),
+					FirstSeen:  rec.FirstSeen,
+					LastSeen:   rec.LastSeen,
+					Expiration: rec.Expiration,
+				})
+
+				logMsg(LOG_INFO, "CIDR update event: %s", cidr)
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			logMsg(LOG_ERROR, "CIDR watch scanner error: %v", err)
+		}
+
+		resp.Body.Close()
+		logMsg(LOG_ERROR, "CIDR watch connection closed, reconnecting")
+		time.Sleep(2 * time.Second)
+	}
+}
+
 func waitForEtcd(endpoint string, maxWait time.Duration) {
     url := endpoint + "/health"
 

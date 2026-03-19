@@ -5,6 +5,7 @@ package main
 
 import (
     "fmt"
+    "net"
     "strings"
     "time"
     "github.com/miekg/dns"
@@ -20,9 +21,21 @@ func startDNSListener(addr string) {
 
     dns.HandleFunc(".", handleDNSRequest)
 
+    // Create the UDP listener manually so we can increase the OS receive buffer.
+    // The default kernel buffer is typically 212 KiB; under burst load it fills up
+    // and silently drops packets, causing client-side i/o timeouts.
+    udpConn, err := net.ListenPacket("udp", addr)
+    if err != nil {
+        logFatal("DNS UDP listen failed: %v", err)
+        return
+    }
+
+    setUDPReceiveBuffer(udpConn)
+
     udpServer := &dns.Server{
-        Addr: addr,
-        Net:  "udp",
+        PacketConn: udpConn,
+        Net:        "udp",
+        UDPSize:    dns.DefaultMsgSize,
     }
 
     tcpServer := &dns.Server{
@@ -34,7 +47,7 @@ func startDNSListener(addr string) {
 
         logListerner("DNS-UDP", addr)
 
-        if err := udpServer.ListenAndServe(); err != nil {
+        if err := udpServer.ActivateAndServe(); err != nil {
             logFatal("DNS UDP server failed: %v", err)
         }
     }()

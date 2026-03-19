@@ -206,15 +206,44 @@ curl -X DELETE localhost:8090/block/1.2.3.4
 ```
 
 
+## Blocking a Network (CIDR)
+
+Add a network range to the blocklist:
+
+```bash
+curl -X PUT localhost:8090/block-network/192.168.1.0/24
+```
+
+Add with expiration and source:
+
+```bash
+curl -X PUT "localhost:8090/block-network/10.0.0.0/8?duration=24h&source=manual"
+```
+
+IPv6 networks are supported the same way:
+
+```bash
+curl -X PUT "localhost:8090/block-network/2001:db8::/32?duration=12h"
+```
+
+Remove a network block:
+
+```bash
+curl -X DELETE localhost:8090/block-network/192.168.1.0/24
+```
+
+The host bits of the supplied address are masked automatically, so `192.168.1.55/24` is stored as `192.168.1.0/24`.
+
+
 ## HTTP Lookup API
 
-Query the blocklist:
+Query the blocklist by IP address:
 
 ```bash
 curl localhost:8080/lookup/1.2.3.4
 ```
 
-Example response:
+Example response (exact IP match):
 
 ```json
 {
@@ -228,6 +257,19 @@ Example response:
   "remaining_seconds": 0,
   "return_code": "127.0.0.2",
   "source": "open-blocklist"
+}
+```
+
+If the IP is not individually blocked but falls within a blocked network range, the lookup still returns blocked and includes the matching CIDR:
+
+```json
+{
+  "blocked": true,
+  "ip": "192.168.1.55",
+  "matched_cidr": "192.168.1.0/24",
+  "source": "manual",
+  "remaining_duration": "23h59m12s",
+  ...
 }
 ```
 
@@ -249,6 +291,12 @@ X-Blocklist-Ip: 1.2.3.4
 X-Blocklist-Return: 127.0.0.2
 X-Blocklist-Source: open-blocklist
 X-Blocklist-Remaining-Duration: permanent
+```
+
+When the match is a CIDR network block, an additional header is returned:
+
+```
+X-Blocklist-Matched-CIDR: 192.168.1.0/24
 ```
 
 
@@ -364,6 +412,21 @@ You can watch blocklist changes in real time.
 ```bash
 docker exec open-blocklist-etcd \
 etcdctl watch /skydns/internal/open-blocklist --prefix
+```
+
+Network (CIDR) blocks are stored under a separate prefix:
+
+```bash
+docker exec open-blocklist-etcd \
+etcdctl get /skydns/internal/open-blocklist-cidr --prefix
+```
+
+Example:
+
+```
+/skydns/internal/open-blocklist-cidr/192.168.1.0_24
+{"v":1,"host":"127.0.0.2","ttl":120,"source":"manual","first_seen":1773602647,"expiration":0}
+```
 ```
 
 This streams updates whenever entries are created, modified, or deleted.

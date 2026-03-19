@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,6 +15,8 @@ import (
 	"sync/atomic"
 	"text/tabwriter"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // ---- Config ---------------------------------------------------------------
@@ -38,19 +39,22 @@ func defaultConfig() Config {
 		DNSAddr:     "127.0.0.1:55",
 		CustomDNS:   "127.0.0.1:5353",
 		Zone:        "open-blocklist.internal",
-		Entries:     10_000,
-		Concurrency: 50,
+		Entries:     1000,
+		Concurrency: 100,
 		Seed:        42,
 	}
 }
 
 // ---- Result ---------------------------------------------------------------
 
+const maxErrorSamples = 5
+
 type Result struct {
-	Name     string
-	Total    int
-	Errors   int
-	Duration time.Duration
+	Name         string
+	Total        int
+	Errors       int
+	Duration     time.Duration
+	ErrorSamples []string // up to maxErrorSamples distinct messages
 	// latency buckets (µs)
 	P50, P95, P99 time.Duration
 	Latencies     []time.Duration
@@ -199,27 +203,36 @@ func authIP(lookupBase, ip string) (int, error) {
 
 // ---- DNS helpers ----------------------------------------------------------
 
-func newDNSResolver(addr string) *net.Resolver {
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 5 * time.Second}
-			return d.DialContext(ctx, "udp", addr)
-		},
+func newDNSClient() *dns.Client {
+	return &dns.Client{
+		Net:     "udp",
+		Timeout: 5 * time.Second,
 	}
 }
 
-// queryRBL queries addr for <reversed-ip>.<zone> A record.
-func queryRBL(resolver *net.Resolver, ip, zone string) (bool, error) {
-	fqdn := reverseIP(ip) + "." + zone
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	addrs, err := resolver.LookupHost(ctx, fqdn)
+// queryRBL sends a direct DNS A query for <reversed-ip>.<zone> to addr.
+// Returns (true, nil) if blocked, (false, nil) on NXDOMAIN, (false, err) on any other failure.
+func queryRBL(client *dns.Client, addr, ip, zone string) (bool, error) {
+	fqdn := dns.Fqdn(reverseIP(ip) + "." + zone)
+
+	m := new(dns.Msg)
+	m.SetQuestion(fqdn, dns.TypeA)
+	m.RecursionDesired = false
+
+	r, _, err := client.Exchange(m, addr)
 	if err != nil {
-		// NXDOMAIN = not blocked
+		return false, fmt.Errorf("dns query %s@%s: %w", fqdn, addr, err)
+	}
+
+	if r.Rcode == dns.RcodeNameError {
 		return false, nil
 	}
-	return len(addrs) > 0, nil
+
+	if r.Rcode != dns.RcodeSuccess {
+		return false, fmt.Errorf("dns query %s@%s: rcode %s", fqdn, addr, dns.RcodeToString[r.Rcode])
+	}
+
+	return len(r.Answer) > 0, nil
 }
 
 // ---- Benchmark runner -----------------------------------------------------
@@ -240,10 +253,10 @@ func runBench(name string, ips []string, concurrency int, fn benchFunc) Result {
 	close(work)
 
 	var (
-		mu      sync.Mutex
-		errCnt  int64
-		wg      sync.WaitGroup
-		latBuf  = make([][]time.Duration, concurrency)
+		mu     sync.Mutex
+		errCnt int64
+		wg     sync.WaitGroup
+		latBuf = make([][]time.Duration, concurrency)
 	)
 
 	start := time.Now()
@@ -256,6 +269,11 @@ func runBench(name string, ips []string, concurrency int, fn benchFunc) Result {
 				t0 := time.Now()
 				if err := fn(ip); err != nil {
 					atomic.AddInt64(&errCnt, 1)
+					mu.Lock()
+					if len(result.ErrorSamples) < maxErrorSamples {
+						result.ErrorSamples = append(result.ErrorSamples, err.Error())
+					}
+					mu.Unlock()
 				}
 				lats = append(lats, time.Since(t0))
 			}
@@ -276,6 +294,16 @@ func runBench(name string, ips []string, concurrency int, fn benchFunc) Result {
 }
 
 // ---- Reporting ------------------------------------------------------------
+
+func logErrors(r Result) {
+	if len(r.ErrorSamples) == 0 {
+		return
+	}
+	log.Printf("  errors (showing up to %d of %d):", maxErrorSamples, r.Errors)
+	for _, msg := range r.ErrorSamples {
+		log.Printf("    - %s", msg)
+	}
+}
 
 func printResults(results []Result) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
@@ -344,6 +372,7 @@ func main() {
 			return blockIP(cfg.AdminBase, ip)
 		})
 		log.Printf("  done: %.0f RPS, %d errors", r.RPS(), r.Errors)
+		logErrors(r)
 		results = append(results, r)
 	}
 
@@ -362,6 +391,7 @@ func main() {
 			return nil
 		})
 		log.Printf("  cold done: %.0f RPS, %d errors", r.RPS(), r.Errors)
+		logErrors(r)
 		results = append(results, r)
 
 		// second pass: warm (any in-process caching should kick in)
@@ -376,6 +406,7 @@ func main() {
 			return nil
 		})
 		log.Printf("  warm done: %.0f RPS, %d errors", r2.RPS(), r2.Errors)
+		logErrors(r2)
 		results = append(results, r2)
 	}
 
@@ -393,6 +424,7 @@ func main() {
 			return nil
 		})
 		log.Printf("  done: %.0f RPS, %d errors", r.RPS(), r.Errors)
+		logErrors(r)
 		results = append(results, r)
 	}
 
@@ -404,80 +436,83 @@ func main() {
 	}
 
 	if *doCoreDNS {
-		coreDNSResolver := newDNSResolver(cfg.DNSAddr)
+		coreDNSClient := newDNSClient()
 		log.Printf("Phase 4: CoreDNS RBL queries (%d entries, addr=%s) ...", len(dnsSample), cfg.DNSAddr)
 
 		// cold
 		r := runBench("coredns_cold", dnsSample, cfg.Concurrency, func(ip string) error {
-			found, err := queryRBL(coreDNSResolver, ip, cfg.Zone)
+			found, err := queryRBL(coreDNSClient, cfg.DNSAddr, ip, cfg.Zone)
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", ip, err)
 			}
 			if !found {
-				return fmt.Errorf("expected %s in RBL", ip)
+				return fmt.Errorf("%s: NXDOMAIN (not in RBL)", ip)
 			}
 			return nil
 		})
 		log.Printf("  cold done: %.0f RPS, %d errors", r.RPS(), r.Errors)
+		logErrors(r)
 		results = append(results, r)
 
 		// warm (CoreDNS cache should serve many hits)
 		r2 := runBench("coredns_warm", dnsSample, cfg.Concurrency, func(ip string) error {
-			found, err := queryRBL(coreDNSResolver, ip, cfg.Zone)
+			found, err := queryRBL(coreDNSClient, cfg.DNSAddr, ip, cfg.Zone)
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", ip, err)
 			}
 			if !found {
-				return fmt.Errorf("expected %s in RBL", ip)
+				return fmt.Errorf("%s: NXDOMAIN (not in RBL)", ip)
 			}
 			return nil
 		})
 		log.Printf("  warm done: %.0f RPS, %d errors", r2.RPS(), r2.Errors)
+		logErrors(r2)
 		results = append(results, r2)
 	}
 
 	// -- Phase 5: Custom DNS resolver (e.g. 5353) ---------------------------
 	if *doCustomDNS {
-		customResolver := newDNSResolver(cfg.CustomDNS)
+		customDNSClient := newDNSClient()
 		log.Printf("Phase 5: Custom resolver RBL queries (%d entries, addr=%s) ...", len(dnsSample), cfg.CustomDNS)
 
 		r := runBench("custom_dns_cold", dnsSample, cfg.Concurrency, func(ip string) error {
-			found, err := queryRBL(customResolver, ip, cfg.Zone)
+			found, err := queryRBL(customDNSClient, cfg.CustomDNS, ip, cfg.Zone)
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", ip, err)
 			}
 			if !found {
-				return fmt.Errorf("expected %s in RBL", ip)
+				return fmt.Errorf("%s: NXDOMAIN (not in RBL)", ip)
 			}
 			return nil
 		})
 		log.Printf("  cold done: %.0f RPS, %d errors", r.RPS(), r.Errors)
+		logErrors(r)
 		results = append(results, r)
 
 		r2 := runBench("custom_dns_warm", dnsSample, cfg.Concurrency, func(ip string) error {
-			found, err := queryRBL(customResolver, ip, cfg.Zone)
+			found, err := queryRBL(customDNSClient, cfg.CustomDNS, ip, cfg.Zone)
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", ip, err)
 			}
 			if !found {
-				return fmt.Errorf("expected %s in RBL", ip)
+				return fmt.Errorf("%s: NXDOMAIN (not in RBL)", ip)
 			}
 			return nil
 		})
 		log.Printf("  warm done: %.0f RPS, %d errors", r2.RPS(), r2.Errors)
+		logErrors(r2)
 		results = append(results, r2)
 	}
 
 	// -- Phase 6: Host DNS resolver -----------------------------------------
 	if *doHostDNS {
-		hostResolver := &net.Resolver{PreferGo: true} // uses /etc/resolv.conf
+		hostDNSClient := newDNSClient()
 		log.Printf("Phase 6: Host resolver RBL queries (%d entries) ...", len(dnsSample))
 
 		r := runBench("host_dns_cold", dnsSample, cfg.Concurrency, func(ip string) error {
-			_, err := queryRBL(hostResolver, ip, cfg.Zone)
-			// host resolver may NXDOMAIN if not configured to forward to CoreDNS;
-			// we record results but don't treat them as hard errors here.
-			_ = err
+			// Host resolver uses /etc/resolv.conf nameserver; results not validated
+			// as it may not be configured to forward to CoreDNS.
+			_, _ = queryRBL(hostDNSClient, "127.0.0.1:53", ip, cfg.Zone)
 			return nil
 		})
 		log.Printf("  done: %.0f RPS", r.RPS())
@@ -491,6 +526,7 @@ func main() {
 			return deleteIP(cfg.AdminBase, ip)
 		})
 		log.Printf("  done: %.0f RPS, %d errors", r.RPS(), r.Errors)
+		logErrors(r)
 		results = append(results, r)
 	}
 
