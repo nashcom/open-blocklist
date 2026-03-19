@@ -101,6 +101,19 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
         nil)
 
 
+    var multiInstanceMode int64
+    if gMultiInstanceMode {
+        multiInstanceMode = 1
+    }
+
+    writeMetric(
+        bw,
+        "open-blocklist_multi_instance_mode",
+        "Multi-instance mode enabled via etcd watch (1=enabled 0=disabled)",
+        "gauge",
+        multiInstanceMode,
+        nil)
+
     writeMetric(
         bw,
         "open_blocklist_ip_entries",

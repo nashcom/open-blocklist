@@ -186,7 +186,7 @@ func watchLoop() {
 
                 valueBytes, _ := base64.StdEncoding.DecodeString(ev.KV.Value)
 
-                var rec DNSRecord
+                var rec BlockRecord
 
                 err := json.Unmarshal(valueBytes, &rec)
                 if err != nil {
@@ -202,8 +202,11 @@ func watchLoop() {
                 entry := BlockEntry{
                     IP:             ip,
                     Source:         rec.Source,
+                    Scenario:       rec.Scenario,
+                    Action:         rec.Action,
                     ReturnCode:     IPv4StrToUint32(rec.Host),
                     FirstSeen:      rec.FirstSeen,
+                    LastSeen:       rec.LastSeen,
                     Expiration:     rec.Expiration,
                     CreateRevision: ev.KV.CreateRevision,
                     ModRevision:    ev.KV.ModRevision,
@@ -266,7 +269,7 @@ func loadFromEtcd() {
         key := b64d(kv.Key)
         val := b64d(kv.Value)
 
-        var rec DNSRecord
+        var rec BlockRecord
 
         json.Unmarshal([]byte(val), &rec)
 
@@ -285,8 +288,11 @@ func loadFromEtcd() {
         ipTable.entries[ip] = &BlockEntry{
             IP:             ip,
             Source:         rec.Source,
+            Scenario:       rec.Scenario,
+            Action:         rec.Action,
             ReturnCode:     IPv4StrToUint32(rec.Host),
             FirstSeen:      rec.FirstSeen,
+            LastSeen:       rec.LastSeen,
             Expiration:     rec.Expiration,
             CreateRevision: parseInt64(kv.CreateRevision),
             ModRevision:    parseInt64(kv.ModRevision),

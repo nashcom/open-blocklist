@@ -66,6 +66,15 @@ func blockIP(adminBase, ip string) (int, error) {
     return resp.StatusCode, nil
 }
 
+func blockIPWithParams(adminBase, ip, params string) (int, error) {
+    resp, err := doRequest(http.MethodPut, adminBase+"/block/"+ip+"?"+params)
+    if err != nil {
+        return 0, err
+    }
+    resp.Body.Close()
+    return resp.StatusCode, nil
+}
+
 func deleteIP(adminBase, ip string) (int, error) {
     resp, err := doRequest(http.MethodDelete, adminBase+"/block/"+ip)
     if err != nil {
@@ -76,8 +85,12 @@ func deleteIP(adminBase, ip string) (int, error) {
 }
 
 type LookupResponse struct {
-    Blocked bool   `json:"blocked"`
-    IP      string `json:"ip"`
+    Blocked  bool   `json:"blocked"`
+    IP       string `json:"ip"`
+    Source   string `json:"source"`
+    Scenario string `json:"scenario"`
+    Action   string `json:"action"`
+    LastSeen int64  `json:"last_seen"`
 }
 
 func lookupIP(lookupBase, ip string) (LookupResponse, int, error) {
@@ -212,6 +225,58 @@ func runTests(cfg Config) {
     expect("GET /lookup/"+testIP+" blocked=false after delete",
         err == nil && !lr.Blocked,
         fmt.Sprintf("blocked=%v", lr.Blocked))
+
+    // -----------------------------------------------------------------------
+    section("Block with full fields (CrowdSec-style)")
+
+    richIP := "10.99.3.3"
+    params := "source=crowdsec&scenario=ssh-bf&action=ban&duration=24h"
+
+    code, err = blockIPWithParams(cfg.AdminBase, richIP, params)
+    expect("PUT /block/"+richIP+" with params returns 2xx",
+        err == nil && code >= 200 && code < 300,
+        fmt.Sprintf("err=%v code=%d", err, code))
+
+    lr, code, err = lookupIP(cfg.LookupBase, richIP)
+    expect("GET /lookup/"+richIP+" returns 200",
+        err == nil && code == http.StatusOK,
+        fmt.Sprintf("err=%v code=%d", err, code))
+    expect("GET /lookup/"+richIP+" source=crowdsec",
+        err == nil && lr.Source == "crowdsec",
+        fmt.Sprintf("source=%q", lr.Source))
+    expect("GET /lookup/"+richIP+" scenario=ssh-bf",
+        err == nil && lr.Scenario == "ssh-bf",
+        fmt.Sprintf("scenario=%q", lr.Scenario))
+    expect("GET /lookup/"+richIP+" action=ban",
+        err == nil && lr.Action == "ban",
+        fmt.Sprintf("action=%q", lr.Action))
+    expect("GET /lookup/"+richIP+" last_seen non-zero",
+        err == nil && lr.LastSeen > 0,
+        fmt.Sprintf("last_seen=%d", lr.LastSeen))
+
+    code, err = deleteIP(cfg.AdminBase, richIP)
+    expect("DELETE /block/"+richIP+" returns 2xx",
+        err == nil && code >= 200 && code < 300,
+        fmt.Sprintf("err=%v code=%d", err, code))
+
+    // -----------------------------------------------------------------------
+    section("Default fields")
+
+    defaultIP := "10.99.4.4"
+    code, err = blockIP(cfg.AdminBase, defaultIP)
+    expect("PUT /block/"+defaultIP+" returns 2xx",
+        err == nil && code >= 200 && code < 300,
+        fmt.Sprintf("err=%v code=%d", err, code))
+
+    lr, code, err = lookupIP(cfg.LookupBase, defaultIP)
+    expect("GET /lookup/"+defaultIP+" default action=ban",
+        err == nil && lr.Action == "ban",
+        fmt.Sprintf("action=%q", lr.Action))
+    expect("GET /lookup/"+defaultIP+" last_seen non-zero",
+        err == nil && lr.LastSeen > 0,
+        fmt.Sprintf("last_seen=%d", lr.LastSeen))
+
+    deleteIP(cfg.AdminBase, defaultIP)
 
     // -----------------------------------------------------------------------
     section("Edge cases")

@@ -89,8 +89,12 @@ usage()
   echo "Options"
   echo "--------"
   echo
-  echo "-wolfi       build Wolfi image"
-  echo "-static      build Wolfi static image (very small and stripped down without shell)"
+  echo "-wolfi            build Wolfi image"
+  echo "-static           build Wolfi static image (very small and stripped down without shell)"
+  echo "-pprof            enable pprof profiling endpoint"
+  echo "-unittest         enable built-in unit tests (run before startup)"
+  echo
+  echo "Options can be combined: $(basename $SCRIPT_NAME) -wolfi -pprof -unittest"
   echo
 }
 

@@ -127,6 +127,9 @@ var allowedPutParams = map[string]bool{
     "expiration":  true,
     "source":      true,
     "return_code": true,
+    "scenario":    true,
+    "action":      true,
+    "last_seen":   true,
 }
 
 var (
@@ -175,24 +178,21 @@ type EtcdKV struct {
     Version        string `json:"version"`
 }
 
-type DNSRecord struct {
-    Version        int    `json:"v"`
-    TTL            int    `json:"ttl"`
-    FirstSeen      int64  `json:"first_seen"`
-    Expiration     int64  `json:"expiration"`
-    CreateRevision int64  `json:"create_revision"`
-    ModRevision    int64  `json:"mod_revision"`
-    Host           string `json:"host"`
-    Source         string `json:"source"`
-}
-
-type DNSRecordPut struct {
+// BlockRecord is the etcd persistence format for a blocked IP.
+// CreateRevision and ModRevision are managed by etcd — they are
+// populated from the KV envelope on read and never written to JSON.
+type BlockRecord struct {
     Version    int    `json:"v"`
-    TTL        int    `json:"ttl"`
-    FirstSeen  int64  `json:"first_seen"`
-    Expiration int64  `json:"expiration"`
-    Host       string `json:"host"`
-    Source     string `json:"source"`
+    TTL        int    `json:"ttl,omitempty"`
+    Host       string `json:"host,omitempty"`
+    Source     string `json:"source,omitempty"`
+    Scenario   string `json:"scenario,omitempty"`
+    Action     string `json:"action,omitempty"`
+    FirstSeen  int64  `json:"first_seen,omitempty"`
+    LastSeen   int64  `json:"last_seen,omitempty"`
+    Expiration int64  `json:"expiration,omitempty"`
+    CreateRevision int64 `json:"-"`
+    ModRevision    int64 `json:"-"`
 }
 
 type PTRRecord struct {
@@ -202,10 +202,13 @@ type PTRRecord struct {
 
 type BlockEntry struct {
     IP             string // LATER: have IPv4 and IPv6 table. have the IPv4 table use a uint32 and the IPv6 table a type with two uint64
-    Source         string // Should be short in which case string does not take a few bytes
+    Source         string
+    Scenario       string
+    Action         string
     CreateRevision int64
     ModRevision    int64
     FirstSeen      int64
+    LastSeen       int64
     Expiration     int64
     ReturnCode     uint32
 }
@@ -273,11 +276,16 @@ func entryToMap(entry *BlockEntry) map[string]interface{} {
     return map[string]interface{}{
         "ip":              entry.IP,
         "source":          entry.Source,
+        "scenario":        entry.Scenario,
+        "action":          entry.Action,
         "create_revision": entry.CreateRevision,
         "mod_revision":    entry.ModRevision,
 
         "first_seen":     entry.FirstSeen,
         "first_seen_iso": epochToISO(entry.FirstSeen),
+
+        "last_seen":     entry.LastSeen,
+        "last_seen_iso": epochToISO(entry.LastSeen),
 
         "expiration":     entry.Expiration,
         "expiration_iso": epochToISO(entry.Expiration),
@@ -434,8 +442,15 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     entry := BlockEntry{
         IP:         ipstr,
         Source:     defaultSource,
+        Action:     "ban",
         ReturnCode: IPv4StrToUint32(defaultReturn),
         FirstSeen:  now,
+        LastSeen:   now,
+    }
+
+    // Preserve first_seen if the IP is already blocked
+    if existing, blocked := ipTableLookup(ipstr); blocked && existing != nil {
+        entry.FirstSeen = existing.FirstSeen
     }
 
     q := r.URL.Query()
@@ -458,8 +473,26 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
         entry.Source = v
     }
 
+    if v := q.Get("scenario"); v != "" {
+        entry.Scenario = v
+    }
+
+    if v := q.Get("action"); v != "" {
+        entry.Action = v
+    }
+
     if v := q.Get("return_code"); v != "" {
         entry.ReturnCode = IPv4StrToUint32(v)
+    }
+
+    if v := q.Get("last_seen"); v != "" {
+        t, err := time.Parse(time.RFC3339, v)
+        if err != nil {
+            http.Error(w, "Invalid last_seen timestamp", http.StatusBadRequest)
+            logHttpReq(r, start, ReqType, "Error")
+            return
+        }
+        entry.LastSeen = t.Unix()
     }
 
     if v := q.Get("duration"); v != "" {
@@ -487,12 +520,15 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     rbl := rblKey(ip)
     ptr := reverseKey(ip)
 
-    rblRecord := DNSRecordPut{
+    rblRecord := BlockRecord{
         Version:    1,
         Host:       Uint32ToIPv4Str(entry.ReturnCode),
         TTL:        gRecordTTL,
         Source:     entry.Source,
+        Scenario:   entry.Scenario,
+        Action:     entry.Action,
         FirstSeen:  entry.FirstSeen,
+        LastSeen:   entry.LastSeen,
         Expiration: entry.Expiration,
     }
 
