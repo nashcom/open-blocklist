@@ -55,7 +55,14 @@ log()
   echo
 }
 
-
+add_build_tag()
+{
+  if [ -z "$GO_BUILD_TAGS" ]; then
+    GO_BUILD_TAGS="$1"
+  else
+    GO_BUILD_TAGS="$GO_BUILD_TAGS,$1"
+  fi
+}
 
 print_runtime()
 {
@@ -72,7 +79,6 @@ print_runtime()
   else echo "Completed in $seconds second$s"; fi
   echo
 }
-
 
 usage()
 {
@@ -108,7 +114,11 @@ for a in "$@"; do
       ;;
 
     -pprof)
-      GO_BUILD_TAGS=pprof
+      add_build_tag pprof
+      ;;
+
+    -unittest)
+      add_build_tag unittest
       ;;
 
     -h|/h|-\?|/\?|-help|--help|help|usage)

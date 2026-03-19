@@ -4,20 +4,20 @@
 package main
 
 import (
-    "encoding/json"
-    "flag"
-    "fmt"
-    "log"
-    "net"
-    "net/http"
-    "os"
-    "os/signal"
-    "runtime"
-    "strings"
-    "sync"
-    "sync/atomic"
-    "syscall"
-    "time"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
 )
 
 type LogLevel int
@@ -428,7 +428,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     entry := BlockEntry{
         IP:         ipstr,
         Source:     defaultSource,
-        ReturnCode: FastIPv4StrToUint32(defaultReturn),
+        ReturnCode: IPv4StrToUint32(defaultReturn),
         FirstSeen:  now,
     }
 
@@ -453,7 +453,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     }
 
     if v := q.Get("return_code"); v != "" {
-        entry.ReturnCode = FastIPv4StrToUint32(v)
+        entry.ReturnCode = IPv4StrToUint32(v)
     }
 
     if v := q.Get("duration"); v != "" {
@@ -543,7 +543,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 
     w.WriteHeader(http.StatusNoContent)
 
-    logHttpReq(r, start, ReqType, "NotFound")
+    logHttpReq(r, start, ReqType, "OK")
 }
 
 func handleList(w http.ResponseWriter, r *http.Request) {
@@ -560,8 +560,8 @@ func handleList(w http.ResponseWriter, r *http.Request) {
     defer ipTable.RUnlock()
 
     if len(ipTable.entries) == 0 {
-        w.Write([]byte("{}"))
-        logHttpReq(r, start, ReqType, "Error")
+        w.Write([]byte("[]"))
+        logHttpReq(r, start, ReqType, "OK")
         return
     }
 
@@ -775,6 +775,10 @@ func main() {
     }
 
     initPprof()
+
+    if !runUnitTests() {
+        os.Exit(1)
+    }
 
     logSpace()
 

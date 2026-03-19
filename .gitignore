@@ -1,4 +1,5 @@
 .env
 bin/*
 *.exe
-testing/perftest
+testing/perftest/perftest
+testing/functest/functest

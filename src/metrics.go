@@ -1,4 +1,4 @@
-// smtproxy - SMTP Proxy in Go / metrics routines
+// open-blocklist - An open blocklist tool - metrics routines
 // Copyright Nash!Com, Daniel Nashed 2026  - APACHE 2.0 see LICENSE
 
 package main
@@ -171,6 +171,14 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
         "Total configuration errors detected during startup or reload",
         "counter",
         stats.ConfigErrors.Load(),
+        nil)
+
+    writeMetric(
+        bw,
+        "open-blocklist_log_dropped_total",
+        "Total log messages written synchronously due to full or uninitialized log channel",
+        "counter",
+        stats.LogDropped.Load(),
         nil)
 
     // DNS stats

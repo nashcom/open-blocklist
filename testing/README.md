@@ -1,39 +1,34 @@
-# perftest — open-blocklist performance test
+# testing — open-blocklist test suite
 
-A standalone Go program that benchmarks all surfaces of open-blocklist:
-API insert, API lookup (cold + warm), API auth, CoreDNS RBL (cold + warm),
-a custom-port resolver, and the host OS resolver.
+Two standalone Go programs for testing open-blocklist:
 
-## Directory layout
+| Directory | Purpose |
+|-----------|---------|
+| `perftest/` | Performance benchmarks — throughput, latency, RPS |
+| `functest/` | Functional correctness — block, lookup, auth, delete |
 
-```
-perftest/
-├── main.go      ← single-file program, no external dependencies
-└── go.mod
-```
+Both require a running open-blocklist stack (API + DNS).
 
-Place this directory next to your main module:
+---
 
-```
-open-blocklist/
-├── ...           ← main service
-└── perftest/     ← this directory
-```
+## perftest
 
-## Quick start
+Benchmarks all surfaces: API insert, API lookup (cold + warm), API auth,
+CoreDNS RBL (cold + warm), custom-port resolver, and host OS resolver.
+
+### Quick start
 
 ```bash
-# 1. start the open-blocklist stack first (API + CoreDNS)
+cd testing/perftest
 
-# 2. run with defaults (100 000 entries, 50 workers)
-cd perftest
+# defaults: 100 000 entries, 50 workers
 go run .
 
-# 3. shorter smoke-test
+# shorter smoke-test
 go run . -entries 1000 -concurrency 10
 ```
 
-## Flags
+### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -50,10 +45,10 @@ go run . -entries 1000 -concurrency 10
 | `-api-auth` | `true` | Run /auth benchmark |
 | `-coredns-dns` | `true` | Run CoreDNS RBL benchmark |
 | `-custom-dns` | `true` | Run custom resolver benchmark |
-| `-host-dns` | `true` | Run host resolver benchmark |
+| `-host-dns` | `false` | Run host resolver benchmark |
 | `-delete` | `false` | Delete all entries at the end |
 
-## Phases
+### Phases
 
 | Phase | Name(s) in output | What it measures |
 |-------|-------------------|-----------------|
@@ -68,7 +63,7 @@ go run . -entries 1000 -concurrency 10
 > DNS phases use a 10 000 IP sample by default (DNS is RTT-bound; 10 k gives
 > stable percentiles without long runtimes).
 
-## Example output
+### Example output
 
 ```
 Benchmark             Total    Errors  Duration    RPS     P50      P95      P99
@@ -81,22 +76,48 @@ coredns_cold          10000    0       8.442s      1185    38ms     72ms     95m
 coredns_warm          10000    0       1.023s      9775    4.2ms    9.1ms    14ms
 custom_dns_cold       10000    0       9.101s      1099    41ms     79ms     102ms
 custom_dns_warm       10000    0       1.211s      8257    5.1ms    10ms     16ms
-host_dns_cold         10000    0       10.201s     980     45ms     88ms     115ms
 ```
 
-The `warm` vs `cold` gap on CoreDNS rows directly shows the caching benefit.
+---
 
-## What to look for
+## functest
 
-- **`api_lookup_warm` vs `api_lookup_cold`**: in-process / HTTP-layer caching.
-- **`coredns_warm` vs `coredns_cold`**: CoreDNS cache plugin effectiveness.
-- **`coredns_*` vs `custom_dns_*`**: cost of the extra hop through a forwarding resolver.
-- **`host_dns_*`**: baseline for applications that just use the OS resolver — depends heavily on `/etc/resolv.conf` forwarding setup.
-- **Error column**: any non-zero value needs investigation before reading RPS numbers.
+Verifies API correctness: block → lookup → HEAD → auth → delete → verify clean.
+Exits 0 if all pass, 1 if any fail. Suitable for CI smoke-tests.
+
+### Quick start
+
+```bash
+cd testing/functest
+
+go run .
+
+# against a non-default stack
+go run . -admin http://myhost:8090 -lookup http://myhost:8080
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-admin` | `http://localhost:8090` | Admin API base (PUT/DELETE /block) |
+| `-lookup` | `http://localhost:8080` | Lookup API base (/lookup, /auth) |
+
+### What it tests
+
+- Block an IP → expect 2xx
+- GET /lookup → expect 200 + `blocked: true`
+- HEAD /lookup → expect `X-Blocklist-Status: blocked`
+- HEAD /auth → expect 403 for blocked IP, 200 for clean IP
+- GET /lookup on a clean IP → expect 204
+- HEAD /lookup on a clean IP → expect `X-Blocklist-Status: clean`
+- DELETE /block → expect 2xx
+- GET /lookup after delete → expect 204
+- Edge case: invalid IP → expect 400/404
+
+---
 
 ## Notes
 
-- All IPs are generated in `10.0.0.0/8` to avoid touching real addresses.
-- The same seed always produces the same IP set, making runs reproducible.
-- The program has **no external dependencies** — only the Go standard library.
-- Adjust `-concurrency` to match your server's CPU count for fairness.
+- All test IPs are in `10.0.0.0/8` to avoid touching real addresses.
+- Neither tool has external dependencies — only the Go standard library.

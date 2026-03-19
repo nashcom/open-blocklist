@@ -202,7 +202,7 @@ func watchLoop() {
                 entry := BlockEntry{
                     IP:             ip,
                     Source:         rec.Source,
-                    ReturnCode:     FastIPv4StrToUint32(rec.Host),
+                    ReturnCode:     IPv4StrToUint32(rec.Host),
                     FirstSeen:      rec.FirstSeen,
                     Expiration:     rec.Expiration,
                     CreateRevision: ev.KV.CreateRevision,
@@ -285,7 +285,7 @@ func loadFromEtcd() {
         ipTable.entries[ip] = &BlockEntry{
             IP:             ip,
             Source:         rec.Source,
-            ReturnCode:     FastIPv4StrToUint32(rec.Host),
+            ReturnCode:     IPv4StrToUint32(rec.Host),
             FirstSeen:      rec.FirstSeen,
             Expiration:     rec.Expiration,
             CreateRevision: parseInt64(kv.CreateRevision),

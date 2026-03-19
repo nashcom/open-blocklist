@@ -348,37 +348,39 @@ func remainingDuration(exp int64) string {
 }
 
 
-func IPv4StringToUint32(s string) (uint32, error) {
+// IPv4StrToUint32 parses an IPv4 address string into a uint32.
+// Returns 0 for any invalid input — negative octets, out-of-range values,
+// wrong number of octets, or any non-numeric character.
+func IPv4StrToUint32(s string) uint32 {
 
-    parts := strings.Split(s, ".")
-    if len(parts) != 4 {
-        return 0, fmt.Errorf("invalid IPv4 address")
+    var result uint32
+    var octet  uint32
+    dots := 0
+
+    for i := 0; i < len(s); i++ {
+        c := s[i]
+        if c >= '0' && c <= '9' {
+            octet = octet*10 + uint32(c-'0')
+            if octet > 255 {
+                return 0
+            }
+        } else if c == '.' {
+            if dots == 3 {
+                return 0
+            }
+            result = result<<8 | octet
+            octet  = 0
+            dots++
+        } else {
+            return 0
+        }
     }
 
-    a, err := strconv.Atoi(parts[0])
-    if err != nil || a > 255 {
-        return 0, fmt.Errorf("invalid IPv4 address")
+    if dots != 3 {
+        return 0
     }
 
-    b, err := strconv.Atoi(parts[1])
-    if err != nil || b > 255 {
-        return 0, fmt.Errorf("invalid IPv4 address")
-    }
-
-    c, err := strconv.Atoi(parts[2])
-    if err != nil || c > 255 {
-        return 0, fmt.Errorf("invalid IPv4 address")
-    }
-
-    d, err := strconv.Atoi(parts[3])
-    if err != nil || d > 255 {
-        return 0, fmt.Errorf("invalid IPv4 address")
-    }
-
-    return uint32(a)<<24 |
-        uint32(b)<<16 |
-        uint32(c)<<8 |
-        uint32(d), nil
+    return result<<8 | octet
 }
 
 func Uint32ToIPv4(v uint32) string {
@@ -410,26 +412,8 @@ func IPv4BytesToUint32(b [4]byte) uint32 {
 }
 
 func IsIPv4(s string) bool {
-    return strings.Count(s, ".") == 3
+    return IPv4StrToUint32(s) != 0 || s == "0.0.0.0"
 }
-
-func FastIPv4StrToUint32(s string) (uint32) {
-
-    var a, b, c, d int
-    n, err := fmt.Sscanf(s, "%d.%d.%d.%d", &a, &b, &c, &d)
-
-    if err != nil || n != 4 ||
-        a > 255 || b > 255 || c > 255 || d > 255 {
-
-        return 0
-    }
-
-    return uint32(a)<<24 |
-        uint32(b)<<16 |
-        uint32(c)<<8 |
-        uint32(d)
-}
-
 
 func Uint32ToIPv4Str(n uint32) string {
 
@@ -477,6 +461,10 @@ type IPv6Key [16]byte
 
 func IsIPv6(s string) bool {
     return strings.Contains(s, ":")
+}
+
+func IsValidIP(s string) bool {
+    return net.ParseIP(s) != nil
 }
 
 func IPv6StringToKey(s string) (IPv6Key, error) {
