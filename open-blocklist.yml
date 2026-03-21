@@ -52,11 +52,11 @@ spec:
     app: open-blocklist
   ports:
     - name: lookup
-      port: 8080
-      targetPort: 8080
-    - name: write
       port: 8090
       targetPort: 8090
+    - name: write
+      port: 8091
+      targetPort: 8091
     - name: metrics
       port: 9100
       targetPort: 9100
@@ -123,10 +123,10 @@ spec:
           image: ghcr.io/nashcom/open-blocklist:latest
 
           ports:
-            - containerPort: 8080
+            - containerPort: 8090
               name: lookup
 
-            - containerPort: 8090
+            - containerPort: 8091
               name: write
 
             - containerPort: 9100

@@ -32,8 +32,8 @@ go run . -entries 1000 -concurrency 10
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-admin` | `http://localhost:8090` | Admin API base (PUT/DELETE /block) |
-| `-lookup` | `http://localhost:8080` | Lookup API base (/lookup, /auth) |
+| `-admin` | `http://localhost:8091` | Admin API base (PUT/DELETE /block) |
+| `-lookup` | `http://localhost:8090` | Lookup API base (/lookup, /auth) |
 | `-coredns` | `127.0.0.1:55` | CoreDNS address (host:port) |
 | `-customdns` | `127.0.0.1:5353` | Custom resolver address |
 | `-zone` | `open-blocklist.internal` | RBL DNS zone suffix |
@@ -93,15 +93,15 @@ cd testing/functest
 go run .
 
 # against a non-default stack
-go run . -admin http://myhost:8090 -lookup http://myhost:8080
+go run . -admin http://myhost:8091 -lookup http://myhost:8090
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-admin` | `http://localhost:8090` | Admin API base (PUT/DELETE /block) |
-| `-lookup` | `http://localhost:8080` | Lookup API base (/lookup, /auth) |
+| `-admin` | `http://localhost:8091` | Admin API base (PUT/DELETE /block) |
+| `-lookup` | `http://localhost:8090` | Lookup API base (/lookup, /auth) |
 
 ### What it tests
 

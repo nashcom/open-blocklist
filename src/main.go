@@ -111,8 +111,8 @@ const (
     defaultReturn            = "127.0.0.2"
     defaultLogJSON           = false
     defaultMultiInstance     = true
-    defaultLookupListenAddr  = ":8080"
-    defaultApiListenAddr     = ":8090"
+    defaultLookupListenAddr  = ":8090"
+    defaultApiListenAddr     = ":8091"
     defaultMetricsListenAddr = ":9100"
     defaultDNSListenAddr     = ":5353"
     defaultLogLevel          = LOG_INFO

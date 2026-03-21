@@ -22,8 +22,8 @@ import (
 // ---- Config ---------------------------------------------------------------
 
 type Config struct {
-	AdminBase   string // e.g. http://localhost:8090
-	LookupBase  string // e.g. http://localhost:8080
+	AdminBase   string // e.g. http://localhost:8091
+	LookupBase  string // e.g. http://localhost:8090
 	DNSAddr     string // CoreDNS addr, e.g. 127.0.0.1:55
 	CustomDNS   string // custom resolver addr, e.g. 127.0.0.1:5353
 	Zone        string // RBL zone suffix
@@ -34,8 +34,8 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		AdminBase:   "http://localhost:8090",
-		LookupBase:  "http://localhost:8080",
+		AdminBase:   "http://localhost:8091",
+		LookupBase:  "http://localhost:8090",
 		DNSAddr:     "127.0.0.1:55",
 		CustomDNS:   "127.0.0.1:5353",
 		Zone:        "open-blocklist.internal",

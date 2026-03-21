@@ -47,13 +47,20 @@ services:
       OPENBL_LOGLEVEL: ${OPENBL_LOGLEVEL:-INFO}
       OPENBL_LOG_FILENAME: ${OPENBL_LOG_FILENAME}
 
+      # CrowdSec bouncer (optional — set OPENBL_CROWDSEC_ENABLED=true in .env)
+      OPENBL_CROWDSEC_ENABLED: ${OPENBL_CROWDSEC_ENABLED:-false}
+      OPENBL_CROWDSEC_LAPI_URL: http://172.30.0.40:8080
+      OPENBL_CROWDSEC_API_KEY: ${CROWDSEC_BOUNCER_KEY}
+      OPENBL_CROWDSEC_POLL_INTERVAL: ${OPENBL_CROWDSEC_POLL_INTERVAL:-30s}
+
     ports:
-      - "${LOOKUP_HOST_PORT:-8080}:8080"
-      - "${BLOCK_HOST_PORT:-8090}:8090"
+      - "${LOOKUP_HOST_PORT:-8090}:8090"
+      - "${BLOCK_HOST_PORT:-8091}:8091"
       - "${METRICS_HOST_PORT:-9100}:9100"
       - "${DNS_HOST_PORT:-5353}:5353/udp"
       - "${DNS_HOST_PORT:-5353}:5353/tcp"
       - "${PPROF_HOST_PORT:-6060}:6060/tcp"
+
 
   coredns:
     image: ${COREDNS_IMAGE:-coredns/coredns:latest}
@@ -78,6 +85,84 @@ services:
       - "${DNS_HOST_PORT:-55}:53/tcp"
 
 
+  crowdsec:
+    image: ${CROWDSEC_IMAGE:-crowdsecurity/crowdsec:latest}
+    container_name: open-blocklist-crowdsec
+    hostname: crowdsec
+
+    networks:
+      openbl_net:
+        ipv4_address: 172.30.0.40
+
+    environment:
+      # Pre-register the open-blocklist bouncer with a fixed key.
+      # Set CROWDSEC_BOUNCER_KEY in your .env file (any random string).
+      BOUNCER_KEY_OPEN_BLOCKLIST: ${CROWDSEC_BOUNCER_KEY}
+
+      # Set to false to enable hub updates and telemetry
+      DISABLE_ONLINE_API: ${CROWDSEC_DISABLE_ONLINE_API:-true}
+
+    volumes:
+      # All acquisition configs (one file per log source)
+      - ./crowdsec/acquis.d:/etc/crowdsec/acquis.d
+
+      # Custom parsers — one line per parser file (directory mounts conflict)
+      - ./crowdsec/domino/parsers/s01-parse/domino.yaml:/etc/crowdsec/parsers/s01-parse/domino.yaml
+      - ./crowdsec/ssh/parsers/s01-parse/sshd.yaml:/etc/crowdsec/parsers/s01-parse/sshd.yaml
+
+      # Override default whitelist to allow private IPs (Docker network) for testing
+      - ./crowdsec/testing/whitelists.yaml:/etc/crowdsec/parsers/s02-enrich/whitelists.yaml
+
+      # Custom scenarios
+      - ./crowdsec/domino/scenarios/domino-bf.yaml:/etc/crowdsec/scenarios/domino-bf.yaml
+      - ./crowdsec/ssh/scenarios/ssh-bf.yaml:/etc/crowdsec/scenarios/ssh-bf.yaml
+
+      # SSH log file (shared with ssh-server container via named volume)
+      - sshd-logs:/logs/ssh
+
+      # Log directory for file-based sources (e.g. Domino)
+      - ${CROWDSEC_LOG_DIR:-./crowdsec/domino/testing/logs}:/logs/domino
+
+      # Persist CrowdSec decisions and state across restarts.
+      # /etc/crowdsec is NOT persisted — config is managed via bind mounts above.
+      - crowdsec-data:/var/lib/crowdsec/data
+
+    ports:
+      # Expose LAPI to the host for cscli access
+      - "${CROWDSEC_HOST_PORT:-18080}:8080"
+
+
+  ssh-server:
+    image: ${SSH_IMAGE:-alpine:latest}
+    container_name: open-blocklist-ssh
+    hostname: ssh-server
+
+    # Run sshd in the foreground (-D) and log to stderr (-e), redirected to
+    # a file on a shared volume. CrowdSec tails that file directly — the same
+    # file-based approach used for Domino and any other log source.
+    command: >
+      /bin/sh -c "
+        apk add --no-cache openssh &&
+        ssh-keygen -A &&
+        adduser -D -s /bin/sh ${SSH_USER:-testuser} &&
+        echo '${SSH_USER:-testuser}:${SSH_PASSWORD:-testpassword}' | chpasswd &&
+        echo 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/demo.conf &&
+        echo 'PermitRootLogin no'        >> /etc/ssh/sshd_config.d/demo.conf &&
+        /usr/sbin/sshd -D -e 2>/logs/sshd.log
+      "
+
+    volumes:
+      - sshd-logs:/logs
+
+    networks:
+      openbl_net:
+        ipv4_address: 172.30.0.50
+
+    ports:
+      - "${SSH_HOST_PORT:-2222}:22"
+
+
 volumes:
   open-blocklist-etcd-data:
-
+  crowdsec-data:
+  sshd-logs:

@@ -5,4 +5,5 @@
 
 docker compose down
 docker volume rm open-blocklist_open-blocklist-etcd-data
-docker compose up 
+docker compose --profile crowdsec up
+#docker compose up

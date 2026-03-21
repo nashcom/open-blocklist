@@ -15,8 +15,8 @@ import (
 // ---- Config ---------------------------------------------------------------
 
 type Config struct {
-    AdminBase  string // e.g. http://localhost:8090
-    LookupBase string // e.g. http://localhost:8080
+    AdminBase  string // e.g. http://localhost:8091
+    LookupBase string // e.g. http://localhost:8090
 }
 
 // ---- State ----------------------------------------------------------------
@@ -292,8 +292,8 @@ func runTests(cfg Config) {
 
 func main() {
     cfg := Config{
-        AdminBase:  "http://localhost:8090",
-        LookupBase: "http://localhost:8080",
+        AdminBase:  "http://localhost:8091",
+        LookupBase: "http://localhost:8090",
     }
 
     flag.StringVar(&cfg.AdminBase, "admin", cfg.AdminBase, "Admin API base URL")

@@ -87,7 +87,7 @@ In addition it provides a small DNS server written in Go provide RBL and IN-ARPA
         v                                               v
 +---------------------------+               +---------------------------+
 |   Lookup / Auth API       |               |   Block Management API    |
-|        (port 8080)        |               |        (port 8090)        |
+|        (port 8090)        |               |        (port 8091)        |
 +-------------+-------------+               +-------------+-------------+
               |                                           |
               |                                           |
@@ -146,15 +146,15 @@ Example output:
 
 | Service              | Port     | Purpose                            |
 | -------------------- | -------- | ---------------------------------- |
-| Lookup API           | **8080** | blocklist lookup and authorization |
-| Block management API | **8090** | add/remove block entries           |
+| Lookup API           | **8090** | blocklist lookup and authorization |
+| Block management API | **8091** | add/remove block entries           |
 | DNS service          | **8053** | DNSBL and reverse DNS lookups      |
 
 Example endpoints:
 
 ```
-http://localhost:8080
-http://localhost:8090
+http://localhost:8091
+http://localhost:8091
 DNS: localhost:8053
 ```
 
@@ -178,31 +178,31 @@ By default, an **Alpine-based image** is used.
 Add an IP address to the blocklist:
 
 ```bash
-curl -X PUT localhost:8090/block/1.2.3.4
+curl -X PUT localhost:8091/block/1.2.3.4
 ```
 
 Add a block with expiration:
 
 ```bash
-curl -X PUT "localhost:8090/block/1.2.3.4?duration=24h"
+curl -X PUT "localhost:8091/block/1.2.3.4?duration=24h"
 ```
 
 Add a block with a custom source:
 
 ```bash
-curl -X PUT "localhost:8090/block/1.2.3.4?duration=2h&source=crowdsec"
+curl -X PUT "localhost:8091/block/1.2.3.4?duration=2h&source=crowdsec"
 ```
 
 Set a fixed expiration timestamp:
 
 ```bash
-curl -X PUT "localhost:8090/block/1.2.3.4?expiration=2026-03-20T12:00:00Z"
+curl -X PUT "localhost:8091/block/1.2.3.4?expiration=2026-03-20T12:00:00Z"
 ```
 
 Remove a block:
 
 ```bash
-curl -X DELETE localhost:8090/block/1.2.3.4
+curl -X DELETE localhost:8091/block/1.2.3.4
 ```
 
 
@@ -211,25 +211,25 @@ curl -X DELETE localhost:8090/block/1.2.3.4
 Add a network range to the blocklist:
 
 ```bash
-curl -X PUT localhost:8090/block-network/192.168.1.0/24
+curl -X PUT localhost:8091/block-network/192.168.1.0/24
 ```
 
 Add with expiration and source:
 
 ```bash
-curl -X PUT "localhost:8090/block-network/10.0.0.0/8?duration=24h&source=manual"
+curl -X PUT "localhost:8091/block-network/10.0.0.0/8?duration=24h&source=manual"
 ```
 
 IPv6 networks are supported the same way:
 
 ```bash
-curl -X PUT "localhost:8090/block-network/2001:db8::/32?duration=12h"
+curl -X PUT "localhost:8091/block-network/2001:db8::/32?duration=12h"
 ```
 
 Remove a network block:
 
 ```bash
-curl -X DELETE localhost:8090/block-network/192.168.1.0/24
+curl -X DELETE localhost:8091/block-network/192.168.1.0/24
 ```
 
 The host bits of the supplied address are masked automatically, so `192.168.1.55/24` is stored as `192.168.1.0/24`.
@@ -240,7 +240,7 @@ The host bits of the supplied address are masked automatically, so `192.168.1.55
 Query the blocklist by IP address:
 
 ```bash
-curl localhost:8080/lookup/1.2.3.4
+curl localhost:8090/lookup/1.2.3.4
 ```
 
 Example response (exact IP match):
@@ -279,7 +279,7 @@ If the IP is not individually blocked but falls within a blocked network range, 
 The lookup endpoint also returns useful metadata via HTTP headers.
 
 ```bash
-curl -I localhost:8080/lookup/1.2.3.4
+curl -I localhost:8090/lookup/1.2.3.4
 ```
 
 Example:
@@ -307,7 +307,7 @@ The `/auth` endpoint provides a fast allow/deny check.
 Blocked address:
 
 ```bash
-curl -I localhost:8080/auth/1.2.3.4
+curl -I localhost:8090/auth/1.2.3.4
 ```
 
 Response:
@@ -319,7 +319,7 @@ HTTP/1.1 403 Forbidden
 Allowed address:
 
 ```bash
-curl -I localhost:8080/auth/1.2.3.5
+curl -I localhost:8090/auth/1.2.3.5
 ```
 
 Response:
@@ -366,7 +366,7 @@ blocked.internal.
 IPv6 addresses can also be blocked.
 
 ```bash
-curl -X PUT "localhost:8090/block/2001:db8::1?duration=24h"
+curl -X PUT "localhost:8091/block/2001:db8::1?duration=24h"
 ```
 
 Reverse lookup:
